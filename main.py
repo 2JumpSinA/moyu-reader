@@ -1958,13 +1958,21 @@ EVENT_MODIFY_STATE = 0x0002
 def acquire_single_instance():
     """返回 (是否首个实例, 激活事件句柄)。
     非首个实例：向已运行实例发激活信号后应立即退出，避免多开抢热键/重复窗口。"""
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # 关键：必须用 use_last_error=True 的 WinDLL。
+    # ctypes.windll 的 GetLastError() 会被 Python 内部调用冲掉、恒返回 0，
+    # "互斥量已存在"永远检测不到 → 可以无限多开。
+    # 必须声明 argtypes：否则 Python str 按 ANSI 传给宽字符 API，名称编码错误。
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
     kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.BOOL, wt.LPCWSTR]
     kernel32.CreateEventW.restype = ctypes.c_void_p
+    kernel32.OpenEventW.argtypes = [wt.DWORD, wt.BOOL, wt.LPCWSTR]
     kernel32.OpenEventW.restype = ctypes.c_void_p
+    kernel32.SetEvent.argtypes = [ctypes.c_void_p]
 
     mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
-    already = kernel32.GetLastError() == ERROR_ALREADY_EXISTS
+    already = ctypes.get_last_error() == ERROR_ALREADY_EXISTS
 
     if already:
         ev = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, ACTIVATE_EVENT)
