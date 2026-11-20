@@ -558,8 +558,11 @@ class ReaderApp:
         # 菜单是独立窗口：显示期间撤掉输入层，否则菜单项落在窗口范围内点不到
         self._layer_allowed = False
         self._sync_input_layer(False)
-        self._remember_menu_rect(event.x_root, event.y_root)
         self.ctx_menu.post(event.x_root, event.y_root)
+        # 必须在 post 之后测量：菜单未实现时 reqwidth() 只有 1px，
+        # 算出的矩形是错的，会被悬停逻辑立刻清掉，导致菜单外点击关不掉
+        self.root.update_idletasks()
+        self._remember_menu_rect(event.x_root, event.y_root)
 
     def _show_context_menu_center(self, _event=None):
         """键盘 F2 在窗口中央弹出菜单"""
@@ -571,8 +574,9 @@ class ReaderApp:
         self._sync_input_layer(False)
         x = self.root.winfo_rootx() + self.root.winfo_width() // 2
         y = self.root.winfo_rooty() + self.root.winfo_height() // 2
-        self._remember_menu_rect(x, y)
         self.ctx_menu.post(x, y)
+        self.root.update_idletasks()
+        self._remember_menu_rect(x, y)
 
     # ────────────────────────────────────
     #              快捷键
