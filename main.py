@@ -2,7 +2,7 @@
 小说阅读器 - 摸鱼神器（改造版）
 双模式：普通模式（带标题栏/工具栏，启动默认）/ 阅读模式（背景完全透明、
 仅文字悬浮、悬停显示移出隐形、置顶、不进任务栏）
-窗口内快捷键：Shift+Q 切换阅读模式 | Shift+W 退出应用 | Esc 老板键
+窗口内快捷键：Shift+Ctrl+Z 切换阅读模式 | Shift+Ctrl+X 退出应用 | Esc 老板键
 全局热键：Ctrl+Alt+M 隐身/唤回（窗口隐藏时也生效）
 记忆：自动记住书目/章节/滚动位置/外观，下次启动自动恢复
 """
@@ -274,7 +274,7 @@ class ReaderApp:
 
         # ── 平滑滚动状态 ──
         self._smooth_job = None           # 滚动动画 after 任务
-        self._scroll_target = 0.0         # 目标滚动位置（行单位）
+        self._scroll_pending = 0.0        # 待滚动行数（相对位移，不用绝对坐标）
         self._bottom_consumed = False     # 章底续章防重
         self._auto_loading = False        # 网页自动续章抓取中
 
@@ -462,7 +462,7 @@ class ReaderApp:
         # ── 阅读模式切换（动态文案） ──
         self.ctx_menu.add_command(
             label="⬜ 进入阅读模式",
-            accelerator="Shift+Q",
+            accelerator="Shift+Ctrl+Z",
             command=self._toggle_reading_mode,
         )
         self._idx_mode = self.ctx_menu.index("⬜ 进入阅读模式")
@@ -502,7 +502,7 @@ class ReaderApp:
         # ── 退出（两段式确认） ──
         self.ctx_menu.add_command(
             label="退出应用",
-            accelerator="Shift+W",
+            accelerator="Shift+Ctrl+X",
             command=self._safe_exit,
         )
 
@@ -531,9 +531,9 @@ class ReaderApp:
         self.root.bind("<Escape>", lambda e: self._on_boss_key())
         self.root.bind("<Control-o>", lambda e: self._on_open_txt())
         self.root.bind("<Control-l>", lambda e: self._show_toc())
-        # Shift+Q / Shift+W：必须同时绑到 toplevel 和 Entry 本身。
+        # Shift+Ctrl+Z / Shift+Ctrl+X：必须同时绑到 toplevel 和 Entry 本身。
         # ttk.Entry 的类绑定会 return "break" 吃掉按键，只绑 toplevel 时
-        # 焦点在网址框内（启动默认焦点）按 Shift+Q/W 完全无响应。
+        # 焦点在网址框内（启动默认焦点）按组合键完全无响应。
         self.root.bind("<KeyPress>", self._on_key_press)
         self.entry_url.bind("<KeyPress>", self._on_key_press, add="+")
         # 滚轮：text 上平滑滚动；toplevel 绑定兜住标题/工具栏/状态栏等区域，
@@ -552,16 +552,16 @@ class ReaderApp:
         self.root.bind("<F2>", self._show_context_menu_center)
 
     def _on_key_press(self, event):
-        """窗口内 Shift+Q 切换阅读模式 / Shift+W 退出应用"""
+        """窗口内 Shift+Ctrl+Z 切换阅读模式 / Shift+Ctrl+X 退出应用"""
         if not (event.state & 0x0001):          # 未按 Shift
             return
-        if event.state & 0x0004:                # 同时按了 Ctrl：交给其他快捷键
+        if not (event.state & 0x0004):          # 未按 Ctrl
             return
         keysym = event.keysym.lower()
-        if keysym == "q":
+        if keysym == "z":
             self._toggle_reading_mode()
             return "break"
-        if keysym == "w":
+        if keysym == "x":
             self._safe_exit()
             return "break"
 
@@ -569,53 +569,59 @@ class ReaderApp:
     #         平滑滚动 & 自动续章
     # ────────────────────────────────────
     def _on_mousewheel(self, event):
-        # 统一平滑滚动（兼容触控板小 delta）；章底自动续章仅在阅读模式生效
-        steps = -event.delta / 40.0
-        self._scroll_target = max(0.0, self._scroll_target + steps)
-        if self._smooth_job is None:
-            self._smooth_job = self.root.after(16, self._smooth_scroll_tick)
-        self._schedule_save(1500)   # 滚动停止 1.5s 后记一次位置
+        # Tk 绑定兜底（钩子未安装或被安全软件拦截时仍可用）
+        self._apply_wheel(event.delta)
         return "break"
 
     def _smooth_scroll_tick(self):
-        """16ms ease-out 步进到目标位置，停稳后检查章底"""
+        """16ms ease-out 相对步进（不依赖绝对坐标，布局变化也不会跳）"""
+        try:
+            first, last = self.text.yview()
+        except tk.TclError:
+            self._smooth_job = None
+            return
+        span = max(last - first, 1e-6)
+        max_first = max(1.0 - span, 0.0)
+        pending = self._scroll_pending
+
+        if abs(pending) < 0.3:
+            self._smooth_job = None
+            self._scroll_pending = 0.0
+            if pending > 0 and first >= max_first - 1e-4:
+                self._check_bottom()
+            return
+
         total = max(int(self.text.index("end-1c").split(".")[0]), 1)
-        first, last = self.text.yview()
-        cur = first * total
-        remaining = self._scroll_target - cur
-        # 顶/底短路：已到边界即收敛，防 target 超限导致 16ms 空转、章底续章永不触发
-        if last >= 0.9995 and remaining > 0:
-            self.text.yview_moveto(1.0)
+        step = pending * 0.25
+        if abs(step) < 0.3:
+            step = 0.3 if pending > 0 else -0.3
+
+        new_first = min(max(first + step / total, 0.0), max_first)
+        moved = new_first - first
+        self.text.yview_moveto(new_first)
+        self._scroll_pending = pending - moved * total
+
+        # 已顶到边界但仍有剩余位移：结束动画；向下则触发续章
+        if abs(moved) < 1e-9 and abs(self._scroll_pending) > 0.3:
             self._smooth_job = None
-            self._check_bottom()
+            self._scroll_pending = 0.0
+            if pending > 0:
+                self._check_bottom()
             return
-        if last <= 0.0001 and remaining < 0:
-            self._scroll_target = cur
-            self._smooth_job = None
-            return
-        if abs(remaining) < 0.6:
-            self._smooth_job = None
-            self._check_bottom()
-            return
-        step = remaining * 0.25
-        if abs(step) < 0.6:
-            step = 0.6 if remaining > 0 else -0.6
-        new = min(max(cur + step, 0.0), float(total))
-        self.text.yview_moveto(new / total)
         self._smooth_job = self.root.after(16, self._smooth_scroll_tick)
 
     def _check_bottom(self):
         """滚动停稳在章底且仍要向下 → 自动续章"""
         if self._bottom_consumed or not self._reading_mode:
             return
-        if self.text.yview()[1] >= 0.9995 and self._scroll_target > 0:
+        if self.text.yview()[1] >= 0.9995:
             self._maybe_continue_reading()
 
     def _stop_smooth_scroll(self):
         if self._smooth_job:
             self.root.after_cancel(self._smooth_job)
         self._smooth_job = None
-        self._scroll_target = 0.0
+        self._scroll_pending = 0.0
         self._bottom_consumed = False
 
     def _maybe_continue_reading(self):
@@ -667,9 +673,8 @@ class ReaderApp:
                 self.text.insert(tk.END, "　　" + line + "\n")
         self.text.config(state=tk.DISABLED)
         self._bottom_consumed = False
-        # 追加改变总行数，把滚动目标重定位到当前位置，避免下次动画反向回滚
-        total = max(int(self.text.index("end-1c").split(".")[0]), 1)
-        self._scroll_target = self.text.yview()[0] * total
+        # 追加改变总行数：清空待滚动量（相对位移模型不受影响）
+        self._scroll_pending = 0.0
         self._schedule_save(600)
 
     def _on_auto_fetch_error(self, msg: str):
@@ -702,7 +707,7 @@ class ReaderApp:
         self._shown_at = time.time()
 
         self.root.attributes("-toolwindow", True)   # 不进任务栏/Alt+Tab
-        self.root.overrideredirect(True)            # 去标题栏
+        self._set_overrideredirect(True)            # 去标题栏
         self.root.attributes("-topmost", True)      # 置顶
         self._apply_reading_colors()                # 色键抠底，仅文字悬浮
         self.root.attributes("-alpha", self.HOVER_ALPHA_SHOWN)
@@ -724,11 +729,13 @@ class ReaderApp:
         self.text.bind("<ButtonRelease-1>", self._on_drag_end)
 
         self.text.see(anchor)
+        # 布局变化（隐藏控件/换字体）后总行数会变，重定位滚动目标，防首滚方向反
+        self._reset_scroll_target()
         self._poll_hover()
 
         if not self._reading_toast_shown:
             if self._show_toast(
-                "已进入阅读模式：悬停显示 / 移开隐身 · Shift+Q 返回普通模式 · Shift+W 退出",
+                "已进入阅读模式：悬停显示 / 移开隐身 · Shift+Ctrl+Z 返回普通模式 · Shift+Ctrl+X 退出",
                 ms=5000,
             ):
                 self._reading_toast_shown = True
@@ -750,7 +757,7 @@ class ReaderApp:
         self.text.unbind("<B1-Motion>")
         self.text.unbind("<ButtonRelease-1>")
 
-        self.root.overrideredirect(False)
+        self._set_overrideredirect(False)
         self.root.attributes("-toolwindow", False)
         try:
             self.root.attributes("-transparentcolor", "")
@@ -782,19 +789,20 @@ class ReaderApp:
             except tk.TclError:
                 pass
         self.text.see(anchor)
+        self._reset_scroll_target()
 
     def _apply_reading_appearance(self):
         """按当前模式恢复窗口外观（老板键唤回后调用）"""
         if self._reading_mode:
             self.root.attributes("-toolwindow", True)
-            self.root.overrideredirect(True)
+            self._set_overrideredirect(True)
             self.root.attributes("-topmost", True)
             self.root.attributes("-alpha", self.HOVER_ALPHA_SHOWN)
             self._hover_visible = True
             self._shown_at = time.time()
         else:
             self.root.attributes("-toolwindow", False)
-            self.root.overrideredirect(False)
+            self._set_overrideredirect(False)
             self.root.attributes("-alpha", self._opacity / 100.0)
             self.root.attributes("-topmost", self.var_topmost.get())
 
@@ -1008,7 +1016,7 @@ class ReaderApp:
 
     def _setup_global_hotkey(self):
         """注册全局热键（窗口隐藏时也生效）：Ctrl+Alt+M 老板键。
-        阅读模式切换与退出已改为窗口内 Shift+Q / Shift+W，不做全局劫持"""
+        阅读模式切换与退出已改为窗口内 Shift+Ctrl+Z / Shift+Ctrl+X，不做全局劫持"""
         MOD_CONTROL, MOD_ALT, MOD_NOREPEAT = 0x2, 0x1, 0x4000
         user32 = ctypes.windll.user32
         self._hotkey_queue: queue.Queue = queue.Queue()
@@ -1056,6 +1064,149 @@ class ReaderApp:
             if not self._exiting:
                 self.root.after(150, self._poll_hotkey)
 
+    # ────────────────────────────────────
+    #       滚轮接管（Win32 低级鼠标钩子）
+    # ────────────────────────────────────
+    def _setup_wheel_hook(self):
+        """用 WH_MOUSE_LL 钩子接管滚轮：指针落在本窗口矩形内时由阅读器处理并
+        吞掉事件，背景窗口（浏览器/IDE）永远收不到——彻底解决"滚两下就滚到
+        背景网页"的问题。Tk 自身的 <MouseWheel> 绑定保留作兜底。"""
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        WH_MOUSE_LL = 14
+        WM_MOUSEWHEEL = 0x020A
+        self._wheel_queue: queue.Queue = queue.Queue()
+        self._wheel_rect = None
+        self._wheel_hook = None
+
+        class MSLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [
+                ("pt", wt.POINT),
+                ("mouseData", wt.DWORD),
+                ("flags", wt.DWORD),
+                ("time", wt.DWORD),
+                ("dwExtraInfo", ctypes.c_void_p),
+            ]
+
+        HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, wt.WPARAM, wt.LPARAM)
+        # 必须声明签名：64 位下 lParam 超出 c_int 会抛 OverflowError，
+        # 导致钩子回调中途异常、滚轮事件丢失
+        user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wt.WPARAM, wt.LPARAM]
+        user32.CallNextHookEx.restype = ctypes.c_ssize_t
+
+        def _pass_through(n_code, w_param, l_param):
+            return user32.CallNextHookEx(None, n_code, w_param, l_param)
+
+        def _hook(n_code, w_param, l_param):
+            try:
+                if n_code >= 0 and w_param == WM_MOUSEWHEEL:
+                    info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                    rect = self._wheel_rect
+                    if rect and self._target_visible():
+                        x, y = info.pt.x, info.pt.y
+                        if rect[0] <= x <= rect[1] and rect[2] <= y <= rect[3]:
+                            delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
+                            self._wheel_queue.put(delta)
+                            return 1        # 吞掉：背景窗口收不到
+            except Exception:
+                pass
+            return _pass_through(n_code, w_param, l_param)
+
+        self._wheel_proc = HOOKPROC(_hook)   # 必须保持引用，否则回调被回收
+
+        def listen():
+            # 低级钩子的 hMod 必须是 NULL（传 exe 句柄会失败：ERROR_MOD_NOT_FOUND 126）
+            user32.SetWindowsHookExW.argtypes = [
+                ctypes.c_int, HOOKPROC, ctypes.c_void_p, wt.DWORD
+            ]
+            user32.SetWindowsHookExW.restype = ctypes.c_void_p
+            self._wheel_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self._wheel_proc, None, 0)
+            if not self._wheel_hook:
+                return   # 安装失败：Tk 绑定兜底继续可用
+            msg = wt.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+        threading.Thread(target=listen, daemon=True).start()
+        self._poll_wheel()
+
+    def _target_visible(self) -> bool:
+        """钩子线程用：窗口是否应接管滚轮"""
+        try:
+            if self._exiting or self.root.state() == "withdrawn":
+                return False
+            if self._reading_mode and self._boss_hidden:
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _refresh_wheel_rect(self):
+        """主线程刷新窗口屏幕矩形（物理像素），供钩子线程快速判断"""
+        try:
+            hwnd = ctypes.windll.user32.GetAncestor(self.root.winfo_id(), 2)
+            if not hwnd:
+                self._wheel_rect = None
+                return
+            r = wt.RECT()
+            if ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r)):
+                self._wheel_rect = (r.left, r.right, r.top, r.bottom)
+            else:
+                self._wheel_rect = None
+        except Exception:
+            self._wheel_rect = None
+
+    def _poll_wheel(self):
+        """主线程消费滚轮队列（Tk 操作必须在主线程）"""
+        self._refresh_wheel_rect()
+        try:
+            while True:
+                delta = self._wheel_queue.get_nowait()
+                self._apply_wheel(delta)
+        except queue.Empty:
+            pass
+        except Exception:
+            pass
+        if not self._exiting:
+            try:
+                self.root.after(60, self._poll_wheel)
+            except tk.TclError:
+                pass
+
+    def _cancel_restore_jobs(self):
+        """取消启动恢复的滚动确认任务（用户一旦自己滚动/换书就不能再拽回去）"""
+        for job in getattr(self, "_restore_jobs", None) or []:
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:
+                pass
+        self._restore_jobs = []
+        self._pending_scroll = None
+
+    def _apply_wheel(self, delta: int):
+        """把滚轮增量落到正文（平滑滚动 + 章底续章）"""
+        if not delta:
+            return
+        self._cancel_restore_jobs()
+        steps = -delta / 40.0
+        self._scroll_pending += steps
+        if self._smooth_job is None:
+            self._smooth_job = self.root.after(16, self._smooth_scroll_tick)
+        self._schedule_save(1500)
+
+    # ────────────────────────────────────
+    #        窗口样式安全封装
+    # ────────────────────────────────────
+    def _set_overrideredirect(self, on: bool):
+        """安全设置无边框：直接走 Tk 原生命令。
+        ttkbootstrap 的包装在设置时仍解析返回值，Tk 某些状态下返回空会抛
+        TclError: expected boolean value but got "None" """
+        try:
+            self.root.tk.call("wm", "overrideredirect", self.root._w, 1 if on else 0)
+        except tk.TclError:
+            pass
+
     def _cancel_pending(self):
         """退出前取消所有待执行的 after 任务，避免销毁后回调报 invalid command name"""
         for attr in ("_save_job", "_hover_job", "_hide_job", "_smooth_job"):
@@ -1074,7 +1225,7 @@ class ReaderApp:
         self._restore_jobs = []
 
     def _safe_exit(self):
-        """Shift+W：保存进度后立刻退出（一段式，不弹确认）"""
+        """Shift+Ctrl+X：保存进度后立刻退出（一段式，不弹确认）"""
         if self._exiting:
             return
         self._exiting = True
@@ -1094,12 +1245,18 @@ class ReaderApp:
         spacing = self.var_line_spacing.get()
         # 两种模式使用完全相同的字号/字重，避免切换时视觉跳变
         self.text.config(font=(family, size), spacing2=spacing)
+        self._reset_scroll_target()
         self._schedule_save(800)
+
+    def _reset_scroll_target(self):
+        """布局/内容变化后清空待滚动量，避免用旧坐标步进"""
+        self._scroll_pending = 0.0
 
     # ────────────────────────────────────
     #             内容展示
     # ────────────────────────────────────
     def _display(self, title: str, content: str):
+        self._cancel_restore_jobs()
         self._stop_smooth_scroll()
         self.lbl_title.config(text=title)
 
@@ -1528,8 +1685,7 @@ class ReaderApp:
                 line = scroll.get("line")
                 if isinstance(line, str):
                     self.text.see(line)
-            total = max(int(self.text.index("end-1c").split(".")[0]), 1)
-            self._scroll_target = self.text.yview()[0] * total
+            self._scroll_pending = 0.0
         except Exception:
             pass
 
@@ -1537,9 +1693,10 @@ class ReaderApp:
     #               启动
     # ────────────────────────────────────
     def run(self):
-        # 普通模式启动（带标题栏/工具栏），Shift+Q 随时切入阅读模式
+        # 普通模式启动（带标题栏/工具栏），Shift+Ctrl+Z 随时切入阅读模式
         self.root.protocol("WM_DELETE_WINDOW", self._force_exit)
         self._setup_global_hotkey()
+        self._setup_wheel_hook()
         self.root.after(200, self._restore_last_session)
         self.root.after(20000, self._autosave_tick)
         self.root.mainloop()
