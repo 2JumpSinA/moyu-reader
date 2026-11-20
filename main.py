@@ -237,6 +237,7 @@ class ReaderApp:
     MIN_SHOWN_SEC = 0.15        # 最短显形时间，防扫过闪隐
     HOVER_MARGIN = 4            # 迟滞边距（像素，物理）
     HOVER_POLL_MS = 30          # 光标轮询周期（33Hz）
+    INPUT_LAYER_ALPHA = 0.01    # 输入层不透明度（再低会失去命中测试）
 
     def __init__(self):
         self.root = ttk.Window(
@@ -901,7 +902,7 @@ class ReaderApp:
         w.withdraw()
         w.overrideredirect(True)
         w.attributes("-topmost", True)
-        w.attributes("-alpha", 0.01)   # 视觉不可见，但命中测试有效（色键层相反）
+        w.attributes("-alpha", self.INPUT_LAYER_ALPHA)   # 视觉不可见，但命中测试有效
         try:
             w.attributes("-toolwindow", True)
         except tk.TclError:
@@ -919,6 +920,8 @@ class ReaderApp:
         w = getattr(self, "_input_layer", None)
         if w is None:
             return
+        if show and self._dialog_open:
+            return   # 目录/对话框打开时不显示输入层，避免盖住它们
         try:
             if show:
                 x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
@@ -927,6 +930,10 @@ class ReaderApp:
                     return
                 w.geometry(f"{ww}x{hh}+{x}+{y}")
                 w.deiconify()
+                # deiconify 后分层属性可能被重置：每次显示都复断言，防止变成不透明色块
+                w.configure(bg="#000000")
+                w.attributes("-alpha", self.INPUT_LAYER_ALPHA)
+                w.attributes("-topmost", True)
                 w.lift()
             else:
                 w.withdraw()
@@ -1478,11 +1485,25 @@ class ReaderApp:
                 pass
 
         self._dialog_open = True
+        self._sync_input_layer(False)
         win = tk.Toplevel(self.root)
         self._toc_win = win
         win.title(f"目录 · {self.txt_book.total} 章")
         win.configure(bg="#FFFFFF")
         win.attributes("-topmost", True)
+        # 关键：Toplevel 可能继承主窗的 alpha / 色键（阅读模式下主窗 alpha 很低），
+        # 那样目录会变成几乎看不见或整窗被抠空——这里强制复位
+        try:
+            win.attributes("-alpha", 1.0)
+        except tk.TclError:
+            pass
+        try:
+            win.attributes("-transparentcolor", "")
+        except tk.TclError:
+            try:
+                win.attributes("-transparentcolor", "#010203")
+            except tk.TclError:
+                pass
         w, h = 440, 580
         x = self.root.winfo_rootx() + (self.root.winfo_width() - w) // 2
         y = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2
@@ -1504,7 +1525,8 @@ class ReaderApp:
             body, yscrollcommand=sb.set, font=("Microsoft YaHei", 10),
             activestyle="none", selectbackground="#B3D9FF",
             selectforeground="#000000", bd=0, highlightthickness=0,
-            exportselection=False,
+            exportselection=False, fg="#1F1F1F", bg="#FFFFFF",
+            selectborderwidth=0,
         )
         lb.pack(side=LEFT, fill=BOTH, expand=True)
         sb.config(command=lb.yview)
@@ -1539,6 +1561,11 @@ class ReaderApp:
         lb.bind("<Return>", _jump)
         win.bind("<Escape>", _close)
         win.protocol("WM_DELETE_WINDOW", _close)
+        tk.Label(
+            win, text=f"共 {self.txt_book.total} 章 · 当前第 {cur + 1} 章",
+            bg="#F5F5F5", fg="#666666", anchor=W, padx=10, pady=4,
+            font=("Microsoft YaHei", 9),
+        ).pack(fill=X, side=BOTTOM)
         lb.focus_set()
         win.after(50, lambda: lb.see(cur) if 0 <= cur < lb.size() else None)
 
