@@ -912,6 +912,15 @@ class ReaderApp:
             self._on_text_color_changed()
 
     # ── 悬停显隐：colorkey 窗口上 Enter/Leave 不可靠，改用光标位置轮询 ──
+    def _close_menu(self):
+        """关闭右键菜单并恢复输入层"""
+        try:
+            self.ctx_menu.unpost()
+        except tk.TclError:
+            pass
+        self._menu_rect = None
+        self._layer_allowed = True
+
     def _remember_menu_rect(self, x: int, y: int):
         """记录菜单的屏幕矩形（菜单是原生窗口，取不到实时几何，
         用 post 坐标 + 请求尺寸估算），供悬停判定避免误隐窗口"""
@@ -1317,6 +1326,15 @@ class ReaderApp:
                             delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
                             self._wheel_queue.put(delta)
                             return 1        # 吞掉：背景窗口收不到
+                elif n_code >= 0 and w_param in (0x0201, 0x0204, 0x020A, 0x020B):
+                    # 左键/右键按下：菜单开着且点在菜单外 → 关闭菜单
+                    # （Tk 的 Menu.post() 不设 grab，点窗口外的事件到不了 Tk）
+                    if self._menu_rect:
+                        info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                        x, y = info.pt.x, info.pt.y
+                        mx0, my0, mx1, my1 = self._menu_rect
+                        if not (mx0 <= x <= mx1 and my0 <= y <= my1):
+                            self._wheel_queue.put("UNPOST_MENU")
             except Exception:
                 pass
             return _pass_through(n_code, w_param, l_param)
@@ -1371,8 +1389,11 @@ class ReaderApp:
         self._refresh_wheel_rect()
         try:
             while True:
-                delta = self._wheel_queue.get_nowait()
-                self._apply_wheel(delta)
+                item = self._wheel_queue.get_nowait()
+                if item == "UNPOST_MENU":
+                    self._close_menu()
+                else:
+                    self._apply_wheel(item)
         except queue.Empty:
             pass
         except Exception:
