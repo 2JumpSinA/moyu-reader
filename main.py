@@ -1770,11 +1770,48 @@ class ReaderApp:
     # ────────────────────────────────────
     #               启动
     # ────────────────────────────────────
+    def set_activate_event(self, event_handle):
+        """接收单实例激活事件句柄（第二个实例启动时触发）"""
+        self._activate_event = event_handle
+
+    def _poll_activation(self):
+        """轮询激活事件：第二次启动时把已有窗口唤到前台"""
+        ev = getattr(self, "_activate_event", None)
+        if ev:
+            try:
+                if ctypes.windll.kernel32.WaitForSingleObject(ctypes.c_void_p(ev), 0) == 0:
+                    self._activate_window()
+            except Exception:
+                pass
+        if not self._exiting:
+            try:
+                self.root.after(300, self._poll_activation)
+            except tk.TclError:
+                pass
+
+    def _activate_window(self):
+        """把窗口从隐藏/最小化/隐身状态恢复到可见并置前"""
+        try:
+            if self.root.state() == "withdrawn":
+                self.root.deiconify()
+            self._boss_hidden = False
+            if self._reading_mode:
+                self.root.attributes("-alpha", self.HOVER_ALPHA_SHOWN)
+                self.root.attributes("-topmost", True)
+                self._hover_visible = True
+                self._shown_at = time.time()
+                self._sync_input_layer(True)
+            self.root.lift()
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+
     def run(self):
         # 普通模式启动（带标题栏/工具栏），Shift+Ctrl+Z 随时切入阅读模式
         self.root.protocol("WM_DELETE_WINDOW", self._force_exit)
         self._setup_global_hotkey()
         self._setup_wheel_hook()
+        self._poll_activation()
         self.root.after(200, self._restore_last_session)
         self.root.after(20000, self._autosave_tick)
         self.root.mainloop()
@@ -1793,13 +1830,61 @@ class ReaderApp:
 
 
 # ═══════════════════════════════════════════════════════
+#                   单实例守护
+# ═══════════════════════════════════════════════════════
+MUTEX_NAME = "Local\\MoyuReader_SingleInstance"
+ACTIVATE_EVENT = "Local\\MoyuReader_Activate"
+ERROR_ALREADY_EXISTS = 183
+EVENT_MODIFY_STATE = 0x0002
+
+
+def acquire_single_instance():
+    """返回 (是否首个实例, 激活事件句柄)。
+    非首个实例：向已运行实例发激活信号后应立即退出，避免多开抢热键/重复窗口。"""
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateEventW.restype = ctypes.c_void_p
+    kernel32.OpenEventW.restype = ctypes.c_void_p
+
+    mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    already = kernel32.GetLastError() == ERROR_ALREADY_EXISTS
+
+    if already:
+        ev = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, ACTIVATE_EVENT)
+        if ev:
+            kernel32.SetEvent(ctypes.c_void_p(ev))
+            kernel32.CloseHandle(ctypes.c_void_p(ev))
+        else:
+            # 兜底：按窗口标题找到已有实例并唤到前台
+            try:
+                u = ctypes.windll.user32
+                hwnd = u.FindWindowW(None, "会议记录")
+                if hwnd:
+                    u.ShowWindow(hwnd, 9)      # SW_RESTORE
+                    u.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+        return False, None
+
+    ev = kernel32.CreateEventW(None, False, False, ACTIVATE_EVENT)
+    return True, ev
+
+
+# ═══════════════════════════════════════════════════════
 #                        入口
 # ═══════════════════════════════════════════════════════
 if __name__ == "__main__":
     try:
+        _first, _activate_event = acquire_single_instance()
+        if not _first:
+            import sys
+            sys.exit(0)          # 已有实例：已发出激活信号，直接退出
         _app = ReaderApp()
+        _app.set_activate_event(_activate_event)
         _app.run()
-    except Exception:
+    except SystemExit:
+        raise
+    except BaseException:
         # 静默退出：不弹错误窗、不留日志文件（无痕性要求）
         # 设 MOYU_DEBUG=1 可在 stderr 查看 traceback（排障用）
         if os.environ.get("MOYU_DEBUG"):
