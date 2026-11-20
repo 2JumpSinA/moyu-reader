@@ -563,6 +563,7 @@ class ReaderApp:
         # 算出的矩形是错的，会被悬停逻辑立刻清掉，导致菜单外点击关不掉
         self.root.update_idletasks()
         self._remember_menu_rect(event.x_root, event.y_root)
+        return "break"     # 阻断向 toplevel 冒泡，避免菜单被 post 两次
 
     def _show_context_menu_center(self, _event=None):
         """键盘 F2 在窗口中央弹出菜单"""
@@ -782,7 +783,7 @@ class ReaderApp:
         self.status_bar.pack_forget()
         self._toolbar_visible = False
 
-        # 阅读字体：加粗 + 最小 14px，无衬底时保证辨识度
+        # 阅读字体：与普通模式完全一致（字号/字重不做额外处理）
         self._apply_font()
 
         # 拖动窗口（按住正文拖）
@@ -850,11 +851,6 @@ class ReaderApp:
         self._toolbar_visible = self._toolbar_was_visible
         if self._toolbar_visible:
             self.toolbar.pack(fill=X, before=self.lbl_title)
-        if self._normal_geometry:
-            try:
-                self.root.geometry(self._normal_geometry)
-            except tk.TclError:
-                pass
         self.text.see(anchor)
         self._reset_scroll_target()
 
@@ -1298,6 +1294,7 @@ class ReaderApp:
         self._wheel_queue: queue.Queue = queue.Queue()
         self._wheel_rect = None
         self._wheel_hook = None
+        self._wheel_active = True    # 主线程维护：钩子线程只读
 
         class MSLLHOOKSTRUCT(ctypes.Structure):
             _fields_ = [
@@ -1324,7 +1321,7 @@ class ReaderApp:
                     rect = self._wheel_rect
                     # 目录/对话框打开时让行：否则事件会被吞掉作用到背后正文，
                     # 目录自己的 Listbox 反而滚不动
-                    if rect and self._target_visible() and not self._dialog_open:
+                    if rect and self._wheel_active and not self._dialog_open:
                         x, y = info.pt.x, info.pt.y
                         if rect[0] <= x <= rect[1] and rect[2] <= y <= rect[3]:
                             delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
@@ -1391,6 +1388,15 @@ class ReaderApp:
     def _poll_wheel(self):
         """主线程消费滚轮队列（Tk 操作必须在主线程）"""
         self._refresh_wheel_rect()
+        # 在主线程计算"是否应接管滚轮"：钩子线程里严禁调用 Tk API
+        try:
+            self._wheel_active = (
+                not self._exiting
+                and self.root.state() != "withdrawn"
+                and not (self._reading_mode and self._boss_hidden)
+            )
+        except tk.TclError:
+            self._wheel_active = False
         try:
             while True:
                 item = self._wheel_queue.get_nowait()
@@ -1817,7 +1823,7 @@ class ReaderApp:
             "book": {},
         }
         try:
-            geo = self._normal_geometry if self._reading_mode else self.root.winfo_geometry()
+            geo = self.root.winfo_geometry()
             if geo:
                 data["window"] = {"geometry": geo}
         except tk.TclError:
