@@ -371,6 +371,7 @@ class ReaderApp:
         self.text.pack(side=LEFT, fill=BOTH, expand=True)
         self.scrollbar.config(command=self.text.yview)
         self.text.config(state=tk.DISABLED)
+        self._configure_tags()
 
         # ═══ 底部翻页栏 ═══
         self.nav_bar = tk.Frame(self.root, bg=self._default_bg, padx=5, pady=2)
@@ -667,7 +668,8 @@ class ReaderApp:
     def _append_chapter(self, title: str, content: str):
         """章底无缝追加：保持当前滚动位置，新内容长在视野下方"""
         self.text.config(state=tk.NORMAL)
-        self.text.insert(tk.END, "\n\n" + title + "\n\n")
+        self.text.insert(tk.END, "\n\n")
+        self._insert_chapter_title(title)
         for line in content.split("\n"):
             line = line.strip()
             if line:
@@ -677,6 +679,12 @@ class ReaderApp:
         # 追加改变总行数：清空待滚动量（相对位移模型不受影响）
         self._scroll_pending = 0.0
         self._schedule_save(600)
+
+    def _insert_chapter_title(self, title: str):
+        """章节标题：加粗 + 居中 + 上下留白，滚动时一眼看出已进入下一章"""
+        if not title:
+            return
+        self.text.insert(tk.END, f"{title}\n", "chapter")
 
     def _on_auto_fetch_error(self, msg: str):
         self._auto_loading = False
@@ -1330,8 +1338,25 @@ class ReaderApp:
         spacing = self.var_line_spacing.get()
         # 两种模式使用完全相同的字号/字重，避免切换时视觉跳变
         self.text.config(font=(family, size), spacing2=spacing)
+        self._configure_tags()
         self._reset_scroll_target()
         self._schedule_save(800)
+
+    def _configure_tags(self):
+        """章节标题样式：比正文大 2px 且加粗居中，滚动时章节边界一眼可辨"""
+        family = self.var_font_family.get()
+        size = self.var_font_size.get()
+        try:
+            self.text.tag_configure(
+                "chapter",
+                font=(family, max(size + 2, 10), "bold"),
+                justify="center",
+                spacing1=16,
+                spacing2=0,
+                spacing3=12,
+            )
+        except tk.TclError:
+            pass
 
     def _reset_scroll_target(self):
         """布局/内容变化后清空待滚动量，避免用旧坐标步进"""
@@ -1347,6 +1372,9 @@ class ReaderApp:
 
         self.text.config(state=tk.NORMAL)
         self.text.delete("1.0", tk.END)
+
+        self._insert_chapter_title(title)
+        self.text.insert(tk.END, "\n")
 
         for line in content.split("\n"):
             line = line.strip()
