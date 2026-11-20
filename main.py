@@ -273,6 +273,9 @@ class ReaderApp:
         # ── 阅读模式状态 ──
         self._reading_mode = False        # 是否处于阅读模式（透明悬浮）
         self._boss_hidden = False         # 老板键隐身中（阅读模式下 alpha 0）
+        self._layer_shown = False          # 输入层当前是否已显示
+        self._layer_allowed = True         # 菜单/对话框期间禁止显示输入层
+        self._menu_rect = None             # 右键菜单屏幕矩形（防误隐）
         self._reading_toast_shown = False # 首次进入阅读模式的教学提示
         self._reading_key = ""            # 当前色键（透明色）
         self._hover_visible = True        # 悬停显隐当前状态
@@ -552,6 +555,10 @@ class ReaderApp:
             self._idx_mode,
             label="✅ 返回普通模式" if self._reading_mode else "⬜ 进入阅读模式",
         )
+        # 菜单是独立窗口：显示期间撤掉输入层，否则菜单项落在窗口范围内点不到
+        self._layer_allowed = False
+        self._sync_input_layer(False)
+        self._remember_menu_rect(event.x_root, event.y_root)
         self.ctx_menu.post(event.x_root, event.y_root)
 
     def _show_context_menu_center(self, _event=None):
@@ -560,8 +567,11 @@ class ReaderApp:
             self._idx_mode,
             label="✅ 返回普通模式" if self._reading_mode else "⬜ 进入阅读模式",
         )
+        self._layer_allowed = False
+        self._sync_input_layer(False)
         x = self.root.winfo_rootx() + self.root.winfo_width() // 2
         y = self.root.winfo_rooty() + self.root.winfo_height() // 2
+        self._remember_menu_rect(x, y)
         self.ctx_menu.post(x, y)
 
     # ────────────────────────────────────
@@ -902,6 +912,36 @@ class ReaderApp:
             self._on_text_color_changed()
 
     # ── 悬停显隐：colorkey 窗口上 Enter/Leave 不可靠，改用光标位置轮询 ──
+    def _remember_menu_rect(self, x: int, y: int):
+        """记录菜单的屏幕矩形（菜单是原生窗口，取不到实时几何，
+        用 post 坐标 + 请求尺寸估算），供悬停判定避免误隐窗口"""
+        try:
+            ww = max(self.ctx_menu.winfo_reqwidth(), 120)
+            hh = max(self.ctx_menu.winfo_reqheight(), 80)
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            x0 = x - ww if x + ww > sw else x
+            y0 = y - hh if y + hh > sh else y
+            self._menu_rect = (x0, y0, x0 + ww, y0 + hh)
+        except tk.TclError:
+            self._menu_rect = None
+
+    def _cursor_in_menu(self) -> bool:
+        """光标是否落在已弹出的右键菜单矩形内。
+        菜单是原生窗口，winfo_ismapped/WindowFromPoint 都不可靠，
+        用 post 时的坐标 + 菜单请求尺寸构造的矩形来判断"""
+        rect = getattr(self, "_menu_rect", None)
+        if not rect:
+            return False
+        try:
+            pt = wt.POINT()
+            if not ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+                return False
+            x0, y0, x1, y1 = rect
+            return x0 <= pt.x <= x1 and y0 <= pt.y <= y1
+        except Exception:
+            return False
+
     def _poll_hover(self):
         if not self._reading_mode:
             return
@@ -911,7 +951,7 @@ class ReaderApp:
         if self.root.grab_current() or self._dragging or self._dialog_open:
             return  # 菜单开着 / 拖动中 / 原生对话框：保持显形
 
-        inside = self._cursor_inside_window()
+        inside = self._cursor_inside_window() or self._cursor_in_menu()
         if inside:
             if not self._hover_visible:
                 if self._hide_job:
@@ -921,13 +961,18 @@ class ReaderApp:
                 self._shown_at = time.time()
                 self.root.attributes("-alpha", self.HOVER_ALPHA_SHOWN)
                 self._sync_input_layer(True)
+            else:
+                # 菜单关闭后把输入层恢复回来（拖动/右键要用）
+                self._sync_input_layer(True)
         elif self._hover_visible and time.time() - self._shown_at >= self.MIN_SHOWN_SEC:
+            self._layer_allowed = True      # 光标离开所有我方窗口：菜单已关，允许恢复输入层
             if not self._hide_job:
                 self._hide_job = self.root.after(self.HIDE_DELAY_MS, self._hide_hover)
 
     def _hide_hover(self):
         self._hide_job = None
         if self._reading_mode and not self._cursor_inside_window() \
+                and not self._cursor_in_menu() \
                 and not self.root.grab_current() and not self._dragging \
                 and not self._dialog_open:
             self._hover_visible = False
@@ -968,8 +1013,8 @@ class ReaderApp:
         w = getattr(self, "_input_layer", None)
         if w is None:
             return
-        if show and self._dialog_open:
-            return   # 目录/对话框打开时不显示输入层，避免盖住它们
+        if show and (self._dialog_open or not self._layer_allowed):
+            return   # 目录/菜单打开时不显示输入层，避免盖住它们
         try:
             if show:
                 x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
@@ -977,7 +1022,9 @@ class ReaderApp:
                 if ww < 10 or hh < 10:
                     return
                 w.geometry(f"{ww}x{hh}+{x}+{y}")
-                w.deiconify()
+                if not self._layer_shown:
+                    w.deiconify()
+                    self._layer_shown = True
                 # deiconify 后分层属性可能被重置：每次显示都复断言，防止变成不透明色块
                 w.configure(bg="#000000")
                 w.attributes("-alpha", self.INPUT_LAYER_ALPHA)
@@ -985,6 +1032,7 @@ class ReaderApp:
                 w.lift()
             else:
                 w.withdraw()
+                self._layer_shown = False
         except tk.TclError:
             pass
 
