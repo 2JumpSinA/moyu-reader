@@ -1520,7 +1520,6 @@ class ReaderApp:
             self.root.destroy()
         except tk.TclError:
             pass
-        self.root.destroy()
 
 
 # ═══════════════════════════════════════════════════════
