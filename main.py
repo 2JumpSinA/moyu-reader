@@ -731,6 +731,9 @@ class ReaderApp:
         self.text.see(anchor)
         # 布局变化（隐藏控件/换字体）后总行数会变，重定位滚动目标，防首滚方向反
         self._reset_scroll_target()
+        # 输入层：透明区域也能拖拽/右键
+        self._ensure_input_layer()
+        self._sync_input_layer(True)
         self._poll_hover()
 
         if not self._reading_toast_shown:
@@ -744,6 +747,7 @@ class ReaderApp:
         anchor = self.text.index("@0,0")
         self._reading_mode = False
         self._boss_hidden = False
+        self._sync_input_layer(False)
 
         for job in (self._hover_job, self._hide_job):
             if job:
@@ -867,6 +871,7 @@ class ReaderApp:
                 self._hover_visible = True
                 self._shown_at = time.time()
                 self.root.attributes("-alpha", self.HOVER_ALPHA_SHOWN)
+                self._sync_input_layer(True)
         elif self._hover_visible and time.time() - self._shown_at >= self.MIN_SHOWN_SEC:
             if not self._hide_job:
                 self._hide_job = self.root.after(self.HIDE_DELAY_MS, self._hide_hover)
@@ -878,6 +883,77 @@ class ReaderApp:
                 and not self._dialog_open:
             self._hover_visible = False
             self.root.attributes("-alpha", self.HOVER_ALPHA_HIDDEN)
+            self._sync_input_layer(False)
+
+    # ────────────────────────────────────
+    #   输入层：色键透明窗口的透明区域不接收鼠标，用一层几乎不可见
+    #   （alpha 0.01）的窗口覆盖其上，负责拖拽与右键
+    # ────────────────────────────────────
+    def _ensure_input_layer(self):
+        w = getattr(self, "_input_layer", None)
+        if w is not None:
+            try:
+                if w.winfo_exists():
+                    return w
+            except tk.TclError:
+                pass
+        w = tk.Toplevel(self.root)
+        w.withdraw()
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.attributes("-alpha", 0.01)   # 视觉不可见，但命中测试有效（色键层相反）
+        try:
+            w.attributes("-toolwindow", True)
+        except tk.TclError:
+            pass
+        w.configure(bg="#000000", cursor="arrow")
+        w.bind("<ButtonPress-1>", self._layer_drag_start)
+        w.bind("<B1-Motion>", self._layer_drag_motion)
+        w.bind("<ButtonRelease-1>", self._layer_drag_end)
+        w.bind("<Button-3>", self._layer_right_click)
+        w.bind("<KeyPress>", self._on_key_press)
+        self._input_layer = w
+        return w
+
+    def _sync_input_layer(self, show: bool):
+        w = getattr(self, "_input_layer", None)
+        if w is None:
+            return
+        try:
+            if show:
+                x, y = self.root.winfo_rootx(), self.root.winfo_rooty()
+                ww, hh = self.root.winfo_width(), self.root.winfo_height()
+                if ww < 10 or hh < 10:
+                    return
+                w.geometry(f"{ww}x{hh}+{x}+{y}")
+                w.deiconify()
+                w.lift()
+            else:
+                w.withdraw()
+        except tk.TclError:
+            pass
+
+    def _layer_drag_start(self, event):
+        self._dragging = True
+        self._drag_x = event.x_root - self.root.winfo_x()
+        self._drag_y = event.y_root - self.root.winfo_y()
+
+    def _layer_drag_motion(self, event):
+        if not self._dragging:
+            return
+        x = event.x_root - self._drag_x
+        y = event.y_root - self._drag_y
+        try:
+            self.root.geometry(f"+{x}+{y}")
+            self._sync_input_layer(True)
+        except tk.TclError:
+            pass
+
+    def _layer_drag_end(self, _event=None):
+        self._dragging = False
+
+    def _layer_right_click(self, event):
+        self._show_context_menu(event)
 
     def _cursor_inside_window(self) -> bool:
         """光标是否在窗口矩形内（全部用 Win32 物理像素，避免高 DPI 错位）。
@@ -946,6 +1022,7 @@ class ReaderApp:
         x = self.root.winfo_x() + (event.x - self._drag_x)
         y = self.root.winfo_y() + (event.y - self._drag_y)
         self.root.geometry(f"+{x}+{y}")
+        self._sync_input_layer(True)
 
     def _on_drag_end(self, _event=None):
         self._dragging = False
@@ -1011,6 +1088,7 @@ class ReaderApp:
         elif self._reading_mode:
             self._boss_hidden = True
             self.root.attributes("-alpha", 0.0)
+            self._sync_input_layer(False)
         else:
             self.root.withdraw()
 
