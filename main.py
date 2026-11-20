@@ -1195,7 +1195,9 @@ class ReaderApp:
                 if n_code >= 0 and w_param == WM_MOUSEWHEEL:
                     info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                     rect = self._wheel_rect
-                    if rect and self._target_visible():
+                    # 目录/对话框打开时让行：否则事件会被吞掉作用到背后正文，
+                    # 目录自己的 Listbox 反而滚不动
+                    if rect and self._target_visible() and not self._dialog_open:
                         x, y = info.pt.x, info.pt.y
                         if rect[0] <= x <= rect[1] and rect[2] <= y <= rect[3]:
                             delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
@@ -1587,6 +1589,14 @@ class ReaderApp:
 
         lb.bind("<Double-Button-1>", _jump)
         lb.bind("<Return>", _jump)
+
+        def _lb_wheel(event):
+            step = -1 if event.delta > 0 else 1
+            lb.yview_scroll(step * 3, "units")
+            return "break"
+
+        lb.bind("<MouseWheel>", _lb_wheel)
+        win.bind("<MouseWheel>", _lb_wheel)
         win.bind("<Escape>", _close)
         win.protocol("WM_DELETE_WINDOW", _close)
         tk.Label(
