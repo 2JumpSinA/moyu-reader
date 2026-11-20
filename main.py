@@ -230,13 +230,13 @@ class ReaderApp:
         ]),
     ]
 
-    # 悬停显隐参数
+    # 悬停显隐参数（响应优先：轮询高频、隐藏延迟短）
     HOVER_ALPHA_SHOWN = 1.0     # 悬停时
     HOVER_ALPHA_HIDDEN = 0.02   # 移出时（留 0.02 便于找回）
-    HIDE_DELAY_MS = 400         # 移出后延迟隐藏
-    MIN_SHOWN_SEC = 0.8         # 最短显形时间，防扫过闪隐
-    HOVER_MARGIN = 8            # 迟滞边距（像素，物理）
-    HOVER_POLL_MS = 100         # 光标轮询周期
+    HIDE_DELAY_MS = 120         # 移出后延迟隐藏
+    MIN_SHOWN_SEC = 0.15        # 最短显形时间，防扫过闪隐
+    HOVER_MARGIN = 4            # 迟滞边距（像素，物理）
+    HOVER_POLL_MS = 30          # 光标轮询周期（33Hz）
 
     def __init__(self):
         self.root = ttk.Window(
@@ -291,6 +291,7 @@ class ReaderApp:
         self._pending_scroll = None
         self._restoring = False          # 恢复会话中：抑制保存
         self._pending_restore_scroll = None  # 网页恢复待应用的滚动位置
+        self._normal_geometry = None     # 普通模式窗口几何（阅读模式期间保留）
 
         # ── tkinter 变量 ──
         self.var_font_family = tk.StringVar(value=self.DEFAULT_FONT_FAMILY)
@@ -317,21 +318,22 @@ class ReaderApp:
         self.toolbar = tk.Frame(self.root, bg=self._default_bg, padx=5, pady=3)
         self.toolbar.pack(fill=X)
 
-        tk.Label(self.toolbar, text="网址:", bg=self._default_bg,
-                 font=("Microsoft YaHei", 10)).pack(side=LEFT, padx=(0, 4))
-        self.entry_url = ttk.Entry(self.toolbar, textvariable=self.var_url, width=55)
-        self.entry_url.pack(side=LEFT, fill=X, expand=True, padx=(0, 4))
-        self.entry_url.bind("<Return>", lambda e: self._on_fetch())
+        # 按钮先靠右 pack：窗口变窄时由输入框收缩，按钮始终可见可选文件
+        self.btn_open = ttk.Button(
+            self.toolbar, text="打开TXT", bootstyle=INFO, width=8, command=self._on_open_txt,
+        )
+        self.btn_open.pack(side=RIGHT, padx=(4, 0))
 
         self.btn_fetch = ttk.Button(
             self.toolbar, text="抓取", bootstyle=PRIMARY, width=6, command=self._on_fetch,
         )
-        self.btn_fetch.pack(side=LEFT, padx=2)
+        self.btn_fetch.pack(side=RIGHT, padx=4)
 
-        self.btn_open = ttk.Button(
-            self.toolbar, text="打开TXT", bootstyle=INFO, width=8, command=self._on_open_txt,
-        )
-        self.btn_open.pack(side=LEFT, padx=2)
+        tk.Label(self.toolbar, text="网址:", bg=self._default_bg,
+                 font=("Microsoft YaHei", 10)).pack(side=LEFT, padx=(0, 4))
+        self.entry_url = ttk.Entry(self.toolbar, textvariable=self.var_url, width=10)
+        self.entry_url.pack(side=LEFT, fill=X, expand=True, padx=(0, 4))
+        self.entry_url.bind("<Return>", lambda e: self._on_fetch())
 
         # ═══ 标题 ═══
         self.lbl_title = tk.Label(
@@ -480,6 +482,13 @@ class ReaderApp:
             command=self._show_toc,
         )
 
+        # ── 打开本地文件（工具栏隐藏/窗口过窄时的保底入口） ──
+        self.ctx_menu.add_command(
+            label="📂 打开TXT…",
+            accelerator="Ctrl+O",
+            command=self._on_open_txt,
+        )
+
         # ── 显示/隐藏工具栏 ──
         self.ctx_menu.add_command(label="显示/隐藏工具栏", command=self._toggle_toolbar)
 
@@ -522,10 +531,15 @@ class ReaderApp:
         self.root.bind("<Escape>", lambda e: self._on_boss_key())
         self.root.bind("<Control-o>", lambda e: self._on_open_txt())
         self.root.bind("<Control-l>", lambda e: self._show_toc())
-        # 窗口内快捷键：Shift+Q 切阅读模式 / Shift+W 退出应用（输入框聚焦时放行）
+        # Shift+Q / Shift+W：必须同时绑到 toplevel 和 Entry 本身。
+        # ttk.Entry 的类绑定会 return "break" 吃掉按键，只绑 toplevel 时
+        # 焦点在网址框内（启动默认焦点）按 Shift+Q/W 完全无响应。
         self.root.bind("<KeyPress>", self._on_key_press)
-        # 滚轮只在 text 上绑定，处理函数 return "break" 截断冒泡防双触发
+        self.entry_url.bind("<KeyPress>", self._on_key_press, add="+")
+        # 滚轮：text 上平滑滚动；toplevel 绑定兜住标题/工具栏/状态栏等区域，
+        # 保证鼠标在本窗口任何位置滚轮都作用于阅读器而非背景窗口
         self.text.bind("<MouseWheel>", self._on_mousewheel)
+        self.root.bind("<MouseWheel>", self._on_mousewheel)
         # 方向键绑在 text 上：URL 输入框内的方向键不会误触发翻页/滚动
         self.text.bind("<Left>", lambda e: self._on_prev())
         self.text.bind("<Right>", lambda e: self._on_next())
@@ -538,14 +552,11 @@ class ReaderApp:
         self.root.bind("<F2>", self._show_context_menu_center)
 
     def _on_key_press(self, event):
-        """窗口内 Shift+Q 切换阅读模式 / Shift+W 退出应用。
-        仅作用于本窗口（不做全局热键），输入框聚焦时直接放行——
-        保证在网址栏里照常输入大写 Q/W"""
+        """窗口内 Shift+Q 切换阅读模式 / Shift+W 退出应用"""
         if not (event.state & 0x0001):          # 未按 Shift
             return
-        widget = self.root.focus_get()
-        if widget is not None and widget.winfo_class() in ("Entry", "TEntry"):
-            return                               # 放行给输入框
+        if event.state & 0x0004:                # 同时按了 Ctrl：交给其他快捷键
+            return
         keysym = event.keysym.lower()
         if keysym == "q":
             self._toggle_reading_mode()
@@ -678,6 +689,11 @@ class ReaderApp:
 
     def _enter_reading_mode(self):
         anchor = self.text.index("@0,0")
+        # 先记录普通模式窗口几何，供记忆与退出时恢复
+        try:
+            self._normal_geometry = self.root.winfo_geometry()
+        except tk.TclError:
+            pass
         self._reading_mode = True
         self._boss_hidden = False
         self._dragging = False
@@ -760,6 +776,11 @@ class ReaderApp:
         self._toolbar_visible = self._toolbar_was_visible
         if self._toolbar_visible:
             self.toolbar.pack(fill=X, before=self.lbl_title)
+        if self._normal_geometry:
+            try:
+                self.root.geometry(self._normal_geometry)
+            except tk.TclError:
+                pass
         self.text.see(anchor)
 
     def _apply_reading_appearance(self):
@@ -1071,11 +1092,8 @@ class ReaderApp:
         family = self.var_font_family.get()
         size = self.var_font_size.get()
         spacing = self.var_line_spacing.get()
-        if self._reading_mode:
-            # 无衬底悬浮：加粗 + 最小 14px
-            self.text.config(font=(family, max(size, 14), "bold"), spacing2=spacing)
-        else:
-            self.text.config(font=(family, size), spacing2=spacing)
+        # 两种模式使用完全相同的字号/字重，避免切换时视觉跳变
+        self.text.config(font=(family, size), spacing2=spacing)
         self._schedule_save(800)
 
     # ────────────────────────────────────
@@ -1340,8 +1358,15 @@ class ReaderApp:
                 "topmost": bool(self.var_topmost.get()),
             },
             "scroll": {"yview": 0.0, "line": "1.0"},
+            "window": {"geometry": ""},
             "book": {},
         }
+        try:
+            geo = self._normal_geometry if self._reading_mode else self.root.winfo_geometry()
+            if geo:
+                data["window"] = {"geometry": geo}
+        except tk.TclError:
+            pass
         try:
             first, _last = self.text.yview()
             data["scroll"] = {
@@ -1433,6 +1458,16 @@ class ReaderApp:
                 self._apply_font()
             except Exception:
                 pass
+
+            # ── 窗口尺寸与位置 ──
+            win = data.get("window") or {}
+            geo = win.get("geometry")
+            if isinstance(geo, str) and "x" in geo and "+" in geo:
+                try:
+                    self.root.geometry(geo)
+                    self._normal_geometry = geo
+                except tk.TclError:
+                    pass
 
             # ── 书目与位置 ──
             book = data.get("book") or {}
