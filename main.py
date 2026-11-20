@@ -238,13 +238,15 @@ class ReaderApp:
     HOVER_MARGIN = 4            # 迟滞边距（像素，物理）
     HOVER_POLL_MS = 30          # 光标轮询周期（33Hz）
     INPUT_LAYER_ALPHA = 0.01    # 输入层不透明度（再低会失去命中测试）
+    MIN_READING_WIDTH = 160     # 阅读模式最小宽
+    MIN_READING_HEIGHT = 60     # 阅读模式最小高
 
     def __init__(self):
         self.root = ttk.Window(
             title="会议记录",
             themename="litera",
             size=(860, 680),
-            minsize=(400, 300),
+            minsize=(300, 180),
         )
         self.root.place_window_center()
 
@@ -260,6 +262,11 @@ class ReaderApp:
         self._drag_x = 0
         self._drag_y = 0
         self._dragging = False
+        self._resizing = False
+        self._resize_w0 = 0
+        self._resize_h0 = 0
+        self._resize_x0 = 0
+        self._resize_y0 = 0
         self._dialog_open = False       # 原生模态对话框打开中
         self._toolbar_was_visible = True
 
@@ -491,6 +498,20 @@ class ReaderApp:
             command=self._on_open_txt,
         )
 
+        # ── 窗口尺寸预设 ──
+        size_preset = tk.Menu(self.ctx_menu, tearoff=0, font=("Microsoft YaHei", 10))
+        for label, (ww, hh) in (
+            ("极简条 320×80", (320, 80)),
+            ("紧凑 420×140", (420, 140)),
+            ("标准 600×200", (600, 200)),
+            ("宽松 800×280", (800, 280)),
+        ):
+            size_preset.add_command(
+                label=label,
+                command=lambda w=ww, h=hh: self._set_window_size(w, h),
+            )
+        self.ctx_menu.add_cascade(label="窗口尺寸", menu=size_preset)
+
         # ── 显示/隐藏工具栏 ──
         self.ctx_menu.add_command(label="显示/隐藏工具栏", command=self._toggle_toolbar)
 
@@ -717,6 +738,7 @@ class ReaderApp:
 
         self.root.attributes("-toolwindow", True)   # 不进任务栏/Alt+Tab
         self._set_overrideredirect(True)            # 去标题栏
+        self.root.minsize(self.MIN_READING_WIDTH, self.MIN_READING_HEIGHT)
         self.root.attributes("-topmost", True)      # 置顶
         self._apply_reading_colors()                # 色键抠底，仅文字悬浮
         self.root.attributes("-alpha", self.HOVER_ALPHA_SHOWN)
@@ -772,6 +794,7 @@ class ReaderApp:
 
         self._set_overrideredirect(False)
         self.root.attributes("-toolwindow", False)
+        self.root.minsize(300, 180)
         try:
             self.root.attributes("-transparentcolor", "")
         except tk.TclError:
@@ -949,11 +972,28 @@ class ReaderApp:
             pass
 
     def _layer_drag_start(self, event):
+        # 右下角 18px 内按下 = 缩放窗口，其余区域 = 移动窗口
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        ww, hh = self.root.winfo_width(), self.root.winfo_height()
+        if (rx + ww - event.x_root) <= 18 and (ry + hh - event.y_root) <= 18:
+            self._resizing = True
+            self._resize_w0, self._resize_h0 = ww, hh
+            self._resize_x0, self._resize_y0 = event.x_root, event.y_root
+            return
         self._dragging = True
         self._drag_x = event.x_root - self.root.winfo_x()
         self._drag_y = event.y_root - self.root.winfo_y()
 
     def _layer_drag_motion(self, event):
+        if self._resizing:
+            new_w = max(self.MIN_READING_WIDTH, self._resize_w0 + (event.x_root - self._resize_x0))
+            new_h = max(self.MIN_READING_HEIGHT, self._resize_h0 + (event.y_root - self._resize_y0))
+            try:
+                self.root.geometry(f"{new_w}x{new_h}")
+                self._sync_input_layer(True)
+            except tk.TclError:
+                pass
+            return
         if not self._dragging:
             return
         x = event.x_root - self._drag_x
@@ -966,6 +1006,9 @@ class ReaderApp:
 
     def _layer_drag_end(self, _event=None):
         self._dragging = False
+        if self._resizing:
+            self._resizing = False
+            self._schedule_save(400)   # 记住新尺寸
 
     def _layer_right_click(self, event):
         self._show_context_menu(event)
@@ -1357,6 +1400,15 @@ class ReaderApp:
                 spacing2=0,
                 spacing3=12,
             )
+        except tk.TclError:
+            pass
+
+    def _set_window_size(self, ww: int, hh: int):
+        """设置窗口尺寸（阅读模式下的条状阅读）"""
+        try:
+            self.root.geometry(f"{ww}x{hh}")
+            self._sync_input_layer(True)
+            self._schedule_save(400)
         except tk.TclError:
             pass
 
