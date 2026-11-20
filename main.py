@@ -233,8 +233,8 @@ class ReaderApp:
     # 悬停显隐参数（响应优先：轮询高频、隐藏延迟短）
     HOVER_ALPHA_SHOWN = 1.0     # 悬停时
     HOVER_ALPHA_HIDDEN = 0.02   # 移出时（留 0.02 便于找回）
-    HIDE_DELAY_MS = 120         # 移出后延迟隐藏
-    MIN_SHOWN_SEC = 0.15        # 最短显形时间，防扫过闪隐
+    HIDE_DELAY_MS = 80          # 移出后延迟隐藏
+    MIN_SHOWN_SEC = 0.1         # 最短显形时间，防扫过闪隐
     HOVER_MARGIN = 4            # 迟滞边距（像素，物理）
     HOVER_POLL_MS = 30          # 光标轮询周期（33Hz）
     INPUT_LAYER_ALPHA = 0.01    # 输入层不透明度（再低会失去命中测试）
@@ -951,7 +951,13 @@ class ReaderApp:
         if self.root.grab_current() or self._dragging or self._dialog_open:
             return  # 菜单开着 / 拖动中 / 原生对话框：保持显形
 
-        inside = self._cursor_inside_window() or self._cursor_in_menu()
+        in_reader = self._cursor_inside_window()
+        in_menu = self._cursor_in_menu()
+        inside = in_reader or in_menu
+        if self._menu_rect and not inside:
+            # 光标已离开菜单和窗口：菜单矩形立即失效，
+            # 否则菜单关闭后那片区域仍被当作"在菜单上"，导致离开窗口不隐身
+            self._menu_rect = None
         if inside:
             if not self._hover_visible:
                 if self._hide_job:
