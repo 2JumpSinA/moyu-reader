@@ -473,6 +473,13 @@ class ReaderApp:
 
         self.ctx_menu.add_separator()
 
+        # ── 目录（章节选择） ──
+        self.ctx_menu.add_command(
+            label="📖 目录（章节选择）",
+            accelerator="Ctrl+L",
+            command=self._show_toc,
+        )
+
         # ── 显示/隐藏工具栏 ──
         self.ctx_menu.add_command(label="显示/隐藏工具栏", command=self._toggle_toolbar)
 
@@ -514,6 +521,7 @@ class ReaderApp:
     def _bind_keys(self):
         self.root.bind("<Escape>", lambda e: self._on_boss_key())
         self.root.bind("<Control-o>", lambda e: self._on_open_txt())
+        self.root.bind("<Control-l>", lambda e: self._show_toc())
         # 窗口内快捷键：Shift+Q 切阅读模式 / Shift+W 退出应用（输入框聚焦时放行）
         self.root.bind("<KeyPress>", self._on_key_press)
         # 滚轮只在 text 上绑定，处理函数 return "break" 截断冒泡防双触发
@@ -1196,6 +1204,104 @@ class ReaderApp:
         self.btn_prev.config(state=tk.NORMAL if self.txt_book.has_prev() else tk.DISABLED)
         self.btn_next.config(state=tk.NORMAL if self.txt_book.has_next() else tk.DISABLED)
         self.var_page_info.set(f"{self.txt_book.current_index + 1} / {self.txt_book.total}")
+
+    # ────────────────────────────────────
+    #              目录 / 章节选择
+    # ────────────────────────────────────
+    def _show_toc(self):
+        """弹出章节目录，双击（或回车）跳转"""
+        if self.is_web_mode or not self.txt_book:
+            self._show_toast("目录仅对 TXT 文件有效（网页模式无固定章节结构）")
+            return
+
+        win = getattr(self, "_toc_win", None)
+        if win is not None:
+            try:
+                if win.winfo_exists():
+                    win.lift()
+                    win.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
+        self._dialog_open = True
+        win = tk.Toplevel(self.root)
+        self._toc_win = win
+        win.title(f"目录 · {self.txt_book.total} 章")
+        win.configure(bg="#FFFFFF")
+        win.attributes("-topmost", True)
+        w, h = 440, 580
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - h) // 2
+        win.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+
+        # 顶部提示条
+        head = tk.Label(
+            win, text="双击跳转 · Esc 关闭 · 当前章节已高亮",
+            bg="#F5F5F5", fg="#666666", anchor=W, padx=10, pady=6,
+            font=("Microsoft YaHei", 9),
+        )
+        head.pack(fill=X)
+
+        body = tk.Frame(win, bg="#FFFFFF")
+        body.pack(fill=BOTH, expand=True, padx=6, pady=(4, 8))
+        sb = ttk.Scrollbar(body, bootstyle="round")
+        sb.pack(side=RIGHT, fill=Y)
+        lb = tk.Listbox(
+            body, yscrollcommand=sb.set, font=("Microsoft YaHei", 10),
+            activestyle="none", selectbackground="#B3D9FF",
+            selectforeground="#000000", bd=0, highlightthickness=0,
+            exportselection=False,
+        )
+        lb.pack(side=LEFT, fill=BOTH, expand=True)
+        sb.config(command=lb.yview)
+
+        for i, (title, _content) in enumerate(self.txt_book.chapters):
+            lb.insert(tk.END, f"{i + 1:>4}. {title}")
+
+        cur = self.txt_book.current_index
+        if 0 <= cur < lb.size():
+            lb.selection_clear(0, tk.END)
+            lb.selection_set(cur)
+            lb.activate(cur)
+            lb.see(cur)
+
+        def _close(_event=None):
+            self._dialog_open = False
+            self._toc_win = None
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
+
+        def _jump(_event=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            idx = int(sel[0])
+            _close()
+            self._goto_chapter(idx)
+
+        lb.bind("<Double-Button-1>", _jump)
+        lb.bind("<Return>", _jump)
+        win.bind("<Escape>", _close)
+        win.protocol("WM_DELETE_WINDOW", _close)
+        lb.focus_set()
+        win.after(50, lambda: lb.see(cur) if 0 <= cur < lb.size() else None)
+
+    def _goto_chapter(self, idx: int):
+        """跳转到指定章节（目录选择 / 快捷键共用）"""
+        if not self.txt_book:
+            return
+        self.txt_book.go_to(idx)
+        self._show_txt_page()
+        self._schedule_save(400)
+        if self._reading_mode:
+            self.text.see("1.0")
+        self.var_status.set(
+            f"已跳转：{self.txt_book.current()[0]}"
+            f"（{idx + 1}/{self.txt_book.total}）"
+        )
 
     # ────────────────────────────────────
     #               翻页
