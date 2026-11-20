@@ -307,6 +307,7 @@ class ReaderApp:
         self.var_line_spacing = tk.IntVar(value=self.DEFAULT_LINE_SPACING)
         self.var_topmost = tk.BooleanVar(value=False)
         self.var_text_color = tk.StringVar(value="#777777")
+        self.var_scroll_speed = tk.IntVar(value=75)   # 滚轮速度百分比（默认稍慢）
         self.var_status = tk.StringVar(value="就绪 — 右键打开菜单 | 输入网址或打开TXT")
         self.var_url = tk.StringVar()
         self.var_page_info = tk.StringVar()
@@ -511,6 +512,22 @@ class ReaderApp:
                 command=lambda w=ww, h=hh: self._set_window_size(w, h),
             )
         self.ctx_menu.add_cascade(label="窗口尺寸", menu=size_preset)
+
+        # ── 滚轮速度 ──
+        speed_menu = tk.Menu(self.ctx_menu, tearoff=0, font=("Microsoft YaHei", 10))
+        for pct, label in (
+            (30, "很慢 30%"),
+            (50, "偏慢 50%"),
+            (75, "稍慢 75%"),
+            (100, "标准 100%"),
+            (150, "偏快 150%"),
+            (200, "很快 200%"),
+        ):
+            speed_menu.add_radiobutton(
+                label=label, variable=self.var_scroll_speed, value=pct,
+                command=self._on_scroll_speed_changed,
+            )
+        self.ctx_menu.add_cascade(label="滚轮速度", menu=speed_menu)
 
         # ── 显示/隐藏工具栏 ──
         self.ctx_menu.add_command(label="显示/隐藏工具栏", command=self._toggle_toolbar)
@@ -1322,12 +1339,18 @@ class ReaderApp:
         self._restore_jobs = []
         self._pending_scroll = None
 
+    def _on_scroll_speed_changed(self):
+        self.var_status.set(f"滚轮速度: {self.var_scroll_speed.get()}%")
+        self._show_toast(f"滚轮速度已设为 {self.var_scroll_speed.get()}%")
+        self._schedule_save(400)
+
     def _apply_wheel(self, delta: int):
         """把滚轮增量落到正文（平滑滚动 + 章底续章）"""
         if not delta:
             return
         self._cancel_restore_jobs()
-        steps = -delta / 40.0
+        speed = max(10, min(300, int(self.var_scroll_speed.get()))) / 100.0
+        steps = (-delta / 40.0) * speed
         self._scroll_pending += steps
         if self._smooth_job is None:
             self._smooth_job = self.root.after(16, self._smooth_scroll_tick)
@@ -1708,6 +1731,7 @@ class ReaderApp:
                 "line_spacing": int(self.var_line_spacing.get()),
                 "opacity": int(self._opacity),
                 "topmost": bool(self.var_topmost.get()),
+                "scroll_speed": int(self.var_scroll_speed.get()),
             },
             "scroll": {"yview": 0.0, "line": "1.0"},
             "window": {"geometry": ""},
@@ -1801,6 +1825,8 @@ class ReaderApp:
                     self.var_font_size.set(app["font_size"])
                 if isinstance(app.get("line_spacing"), int):
                     self.var_line_spacing.set(app["line_spacing"])
+                if isinstance(app.get("scroll_speed"), int):
+                    self.var_scroll_speed.set(max(10, min(300, app["scroll_speed"])))
                 if isinstance(app.get("opacity"), int):
                     self._opacity = max(20, min(100, app["opacity"]))
                     self.root.attributes("-alpha", self._opacity / 100.0)
