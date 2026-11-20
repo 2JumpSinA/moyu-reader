@@ -1,7 +1,7 @@
 [project]
 name = "reader"
-version = "0.1.0"
-description = "小说阅读器 - 支持网页抓取/TXT导入/背景透明/字体调节"
+version = "0.2.0"
+description = "透明悬浮摸鱼阅读器 - 背景完全透明/悬停显隐/滚轮接管/自动续章/目录/阅读记忆"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
