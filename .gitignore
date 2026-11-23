@@ -27,3 +27,6 @@ assets_ui/
 demo_hybrid.mp4
 _capture_masks.py
 _capture_scroll.py
+_render_final.py
+demo_final.mp4
+_seq/
