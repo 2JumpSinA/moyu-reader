@@ -2,8 +2,8 @@
 小说阅读器 - 摸鱼神器（改造版）
 双模式：普通模式（带标题栏/工具栏，启动默认）/ 阅读模式（背景完全透明、
 仅文字悬浮、悬停显示移出隐形、置顶、不进任务栏）
-窗口内快捷键：Shift+Ctrl+Z 切换阅读模式 | Shift+Ctrl+X 退出应用 | Esc 老板键
-隐身唤回：再次双击启动器（单实例激活事件把窗口唤到前台）
+窗口内快捷键：Shift+Ctrl+Z 切换阅读模式 | Shift+Ctrl+X 退出应用 | Esc 老板键隐身
+唤回：Ctrl+Shift+V（全局热键）或再次双击启动器，任何隐身状态均可唤回
 记忆：自动记住书目/章节/滚动位置/外观，下次启动自动恢复
 """
 
@@ -274,6 +274,7 @@ class ReaderApp:
         self._reading_mode = False        # 是否处于阅读模式（透明悬浮）
         self._boss_hidden = False         # 老板键隐身中（阅读模式下 alpha 0）
         self._layer_shown = False          # 输入层当前是否已显示
+        self._force_shown_until = 0.0      # 唤回后的强制显形截止时刻
         self._layer_allowed = True         # 菜单/对话框期间禁止显示输入层
         self._menu_rect = None             # 右键菜单屏幕矩形（防误隐）
         self._reading_toast_shown = False # 首次进入阅读模式的教学提示
@@ -536,7 +537,10 @@ class ReaderApp:
         self.ctx_menu.add_command(label="显示/隐藏工具栏", command=self._toggle_toolbar)
 
         # ── 老板键 ──
-        self.ctx_menu.add_command(label="老板键·立即隐身 (Esc)", command=self._on_boss_key)
+        self.ctx_menu.add_command(
+            label="老板键·立即隐身 (Esc) · 唤回 Ctrl+Shift+V",
+            command=self._on_boss_key,
+        )
 
         # ── 退出（两段式确认） ──
         self.ctx_menu.add_command(
@@ -977,11 +981,16 @@ class ReaderApp:
                 self._sync_input_layer(True)
         elif self._hover_visible and time.time() - self._shown_at >= self.MIN_SHOWN_SEC:
             self._layer_allowed = True      # 光标离开所有我方窗口：菜单已关，允许恢复输入层
+            # 唤回后 3 秒强制显形期：让用户看到窗口回来了
+            if time.time() < self._force_shown_until:
+                return
             if not self._hide_job:
                 self._hide_job = self.root.after(self.HIDE_DELAY_MS, self._hide_hover)
 
     def _hide_hover(self):
         self._hide_job = None
+        if time.time() < self._force_shown_until:
+            return
         if self._reading_mode and not self._cursor_inside_window() \
                 and not self._cursor_in_menu() \
                 and not self.root.grab_current() and not self._dragging \
@@ -1969,8 +1978,54 @@ class ReaderApp:
             except tk.TclError:
                 pass
 
+    # ────────────────────────────────────
+    #   全局唤回热键（Ctrl+Shift+V）
+    # ────────────────────────────────────
+    def _setup_recall_hotkey(self):
+        """注册全局热键 Ctrl+Shift+V：任何状态下把窗口唤回前台。
+        隐身（Esc/老板键）后窗口收不到键盘事件，必须有全局热键兜底；
+        双击启动器（单实例激活）是等效的备用唤回方式"""
+        MOD_CONTROL, MOD_SHIFT, MOD_NOREPEAT = 0x2, 0x4, 0x4000
+        user32 = ctypes.windll.user32
+        self._recall_queue: queue.Queue = queue.Queue()
+        # 注册必须在钩子线程内进行（WM_HOTKEY 投递到注册线程的消息队列）
+        VK_V = 0x56
+
+        def listen():
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.GetModuleHandleW.restype = wt.HMODULE
+            user32.SetWindowsHookExW  # noqa: 仅注释占位，保持属性已加载
+            if not user32.RegisterHotKey(None, 0xA114, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, VK_V):
+                return   # 被占用：双击启动器仍可唤回
+            msg = wt.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == 0x0312:  # WM_HOTKEY
+                    self._recall_queue.put(msg.wParam)
+
+        threading.Thread(target=listen, daemon=True).start()
+        self._poll_recall()
+
+    def _poll_recall(self):
+        """主线程轮询唤回热键队列"""
+        try:
+            while True:
+                self._recall_queue.get_nowait()
+                try:
+                    self._activate_window()
+                except tk.TclError:
+                    pass
+        except queue.Empty:
+            pass
+        finally:
+            if not self._exiting:
+                try:
+                    self.root.after(150, self._poll_recall)
+                except tk.TclError:
+                    pass
+
     def _activate_window(self):
-        """把窗口从隐藏/最小化/隐身状态恢复到可见并置前"""
+        """把窗口从隐藏/最小化/隐身状态恢复到可见并置前。
+        唤回后强制显形 3 秒（鼠标不在窗口上也先亮出来），之后交还悬停机制"""
         try:
             if self.root.state() == "withdrawn":
                 self.root.deiconify()
@@ -1980,6 +2035,7 @@ class ReaderApp:
                 self.root.attributes("-topmost", True)
                 self._hover_visible = True
                 self._shown_at = time.time()
+                self._force_shown_until = time.time() + 3.0
                 self._sync_input_layer(True)
             self.root.lift()
             self.root.focus_force()
@@ -1988,8 +2044,9 @@ class ReaderApp:
 
     def run(self):
         # 普通模式启动（带标题栏/工具栏），Shift+Ctrl+Z 随时切入阅读模式
-        # 隐身（老板键）后再次双击启动器即可唤回（单实例激活事件）
+        # 隐身（老板键）后 Ctrl+Shift+V 或再次双击启动器即可唤回
         self.root.protocol("WM_DELETE_WINDOW", self._force_exit)
+        self._setup_recall_hotkey()
         self._setup_wheel_hook()
         self._poll_activation()
         self.root.after(200, self._restore_last_session)
