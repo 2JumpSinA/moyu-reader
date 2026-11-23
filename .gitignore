@@ -30,3 +30,5 @@ _capture_scroll.py
 _render_final.py
 demo_final.mp4
 _seq/
+_render_lives.py
+lives/
