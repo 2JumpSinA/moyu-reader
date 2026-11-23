@@ -3,7 +3,7 @@
 双模式：普通模式（带标题栏/工具栏，启动默认）/ 阅读模式（背景完全透明、
 仅文字悬浮、悬停显示移出隐形、置顶、不进任务栏）
 窗口内快捷键：Shift+Ctrl+Z 切换阅读模式 | Shift+Ctrl+X 退出应用 | Esc 老板键
-全局热键：Ctrl+Alt+M 隐身/唤回（窗口隐藏时也生效）
+隐身唤回：再次双击启动器（单实例激活事件把窗口唤到前台）
 记忆：自动记住书目/章节/滚动位置/外观，下次启动自动恢复
 """
 
@@ -536,11 +536,7 @@ class ReaderApp:
         self.ctx_menu.add_command(label="显示/隐藏工具栏", command=self._toggle_toolbar)
 
         # ── 老板键 ──
-        self.ctx_menu.add_command(
-            label="老板键·立即隐身 (Esc)",
-            accelerator="Ctrl+Alt+M",
-            command=self._on_boss_key,
-        )
+        self.ctx_menu.add_command(label="老板键·立即隐身 (Esc)", command=self._on_boss_key)
 
         # ── 退出（两段式确认） ──
         self.ctx_menu.add_command(
@@ -1207,7 +1203,7 @@ class ReaderApp:
             self.var_status.set("工具栏已显示")
 
     # ────────────────────────────────────
-    #          老板键 & 全局热键
+    #          老板键（窗口内 Esc）
     # ────────────────────────────────────
     def _on_boss_key(self):
         """老板键：普通模式=整窗隐藏；阅读模式=完全透明（挂起悬停显隐）"""
@@ -1229,56 +1225,6 @@ class ReaderApp:
             self._sync_input_layer(False)
         else:
             self.root.withdraw()
-
-    def _setup_global_hotkey(self):
-        """注册全局热键（窗口隐藏时也生效）：Ctrl+Alt+M 老板键。
-        阅读模式切换与退出已改为窗口内 Shift+Ctrl+Z / Shift+Ctrl+X，不做全局劫持"""
-        MOD_CONTROL, MOD_ALT, MOD_NOREPEAT = 0x2, 0x1, 0x4000
-        user32 = ctypes.windll.user32
-        self._hotkey_queue: queue.Queue = queue.Queue()
-        self._hotkey_actions = {}
-        # 注册必须在 listen 线程内进行：hWnd=NULL 时 WM_HOTKEY 投递到
-        # 注册线程的消息队列，与 GetMessageW 泵必须同线程，否则热键全部失效
-        regs = [
-            (0xA111, 0x4D, self._on_boss_key),          # M
-        ]
-
-        def listen():
-            failed = []
-            for hid, vk, action in regs:
-                if user32.RegisterHotKey(None, hid, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, vk):
-                    self._hotkey_actions[hid] = action
-                else:
-                    failed.append(chr(vk))
-            if failed:
-                msg_text = "全局热键注册失败: Ctrl+Alt+" + ",".join(failed)
-                self.root.after(0, lambda: self.var_status.set(msg_text))
-            if not self._hotkey_actions:
-                return
-            msg = wt.MSG()
-            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-                if msg.message == 0x0312:  # WM_HOTKEY
-                    self._hotkey_queue.put(msg.wParam)
-
-        threading.Thread(target=listen, daemon=True).start()
-        self._poll_hotkey()
-
-    def _poll_hotkey(self):
-        """主线程轮询热键队列（回调全部在 Tk 主线程执行，安全操作 UI）"""
-        try:
-            while True:
-                hid = self._hotkey_queue.get_nowait()
-                action = self._hotkey_actions.get(hid)
-                if action:
-                    try:
-                        action()
-                    except tk.TclError:
-                        pass  # 单个回调失败不影响其他热键
-        except queue.Empty:
-            pass
-        finally:
-            if not self._exiting:
-                self.root.after(150, self._poll_hotkey)
 
     # ────────────────────────────────────
     #       滚轮接管（Win32 低级鼠标钩子）
@@ -2036,8 +1982,8 @@ class ReaderApp:
 
     def run(self):
         # 普通模式启动（带标题栏/工具栏），Shift+Ctrl+Z 随时切入阅读模式
+        # 隐身（老板键）后再次双击启动器即可唤回（单实例激活事件）
         self.root.protocol("WM_DELETE_WINDOW", self._force_exit)
-        self._setup_global_hotkey()
         self._setup_wheel_hook()
         self._poll_activation()
         self.root.after(200, self._restore_last_session)
