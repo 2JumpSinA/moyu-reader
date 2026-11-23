@@ -1016,7 +1016,13 @@ class ReaderApp:
         w.bind("<B1-Motion>", self._layer_drag_motion)
         w.bind("<ButtonRelease-1>", self._layer_drag_end)
         w.bind("<Button-3>", self._layer_right_click)
+        # 点击/拖拽后键盘焦点会落到输入层（独立 Toplevel，bindtags 不经过主窗），
+        # 必须把它用到的按键也绑全，否则 Esc/目录/打开文件在阅读模式下失效
         w.bind("<KeyPress>", self._on_key_press)
+        w.bind("<Escape>", lambda e: self._on_boss_key())
+        w.bind("<Control-l>", lambda e: self._show_toc())
+        w.bind("<Control-o>", lambda e: self._on_open_txt())
+        w.bind("<F2>", self._show_context_menu_center)
         self._input_layer = w
         return w
 
