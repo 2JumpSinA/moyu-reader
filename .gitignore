@@ -9,3 +9,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# demo artifacts
+_demo_record.py
+demo_xiaohongshu.mp4
+_demo_book.txt
+_bg_window.py
