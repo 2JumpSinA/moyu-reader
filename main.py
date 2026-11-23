@@ -1491,7 +1491,8 @@ class ReaderApp:
     def _display(self, title: str, content: str):
         self._cancel_restore_jobs()
         self._stop_smooth_scroll()
-        self.lbl_title.config(text=title)
+        # 标题已作为加粗首行写入正文，标签不再重复显示（否则同屏两份标题）
+        self.lbl_title.config(text="")
 
         self.text.config(state=tk.NORMAL)
         self.text.delete("1.0", tk.END)
