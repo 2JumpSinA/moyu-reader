@@ -45,3 +45,8 @@ _seq/
 lives/
 demo_*.mp4
 assets_ui/
+
+# PyInstaller
+build/
+dist/
+*.spec
