@@ -1528,14 +1528,21 @@ class ReaderApp:
         """窗口高度很小时收紧内边距，否则 20px 的 pady 会把仅有的行挤掉"""
         try:
             h = hh if hh is not None else self.root.winfo_height()
-            if h <= 60:
-                self.text.config(padx=6, pady=1)
+            base_sp = int(self.var_line_spacing.get())
+            if h <= 40:
+                # 单行条：行距必须压到 0，否则一行都放不下（文字会被裁没）
+                self.text.config(padx=6, pady=1, spacing2=0, spacing3=0)
+                self.text_frame.pack_configure(padx=1, pady=0)
+            elif h <= 60:
+                sp = min(base_sp, 2)
+                self.text.config(padx=6, pady=1, spacing2=sp, spacing3=sp)
                 self.text_frame.pack_configure(padx=1, pady=0)
             elif h <= 120:
-                self.text.config(padx=10, pady=4)
+                sp = min(base_sp, 4)
+                self.text.config(padx=10, pady=4, spacing2=sp, spacing3=sp)
                 self.text_frame.pack_configure(padx=2, pady=1)
             else:
-                self.text.config(padx=16, pady=10)
+                self.text.config(padx=16, pady=10, spacing2=base_sp, spacing3=base_sp)
                 self.text_frame.pack_configure(padx=4, pady=2)
         except tk.TclError:
             pass
