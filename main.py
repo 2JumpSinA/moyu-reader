@@ -257,8 +257,8 @@ class ReaderApp:
     HOVER_MARGIN = 4            # 迟滞边距（像素，物理）
     HOVER_POLL_MS = 30          # 光标轮询周期（33Hz）
     INPUT_LAYER_ALPHA = 0.01    # 输入层不透明度（再低会失去命中测试）
-    MIN_READING_WIDTH = 160     # 阅读模式最小宽
-    MIN_READING_HEIGHT = 60     # 阅读模式最小高
+    MIN_READING_WIDTH = 110     # 阅读模式最小宽（约 8 个汉字）
+    MIN_READING_HEIGHT = 26     # 阅读模式最小高（单行条）
 
     def __init__(self):
         self.root = ttk.Window(
@@ -549,6 +549,8 @@ class ReaderApp:
         # ── 窗口尺寸预设 ──
         size_preset = tk.Menu(self.ctx_menu, tearoff=0, font=("Microsoft YaHei", 10))
         for label, (ww, hh) in (
+            ("隐形条 160×26", (160, 26)),
+            ("单行条 240×32", (240, 32)),
             ("极简条 320×80", (320, 80)),
             ("紧凑 420×140", (420, 140)),
             ("标准 600×200", (600, 200)),
@@ -816,6 +818,7 @@ class ReaderApp:
         self.root.attributes("-toolwindow", True)   # 不进任务栏/Alt+Tab
         self._set_overrideredirect(True)            # 去标题栏
         self.root.minsize(self.MIN_READING_WIDTH, self.MIN_READING_HEIGHT)
+        self._apply_compact_padding()
         self.root.attributes("-topmost", True)      # 置顶
         self._apply_reading_colors()                # 色键抠底，仅文字悬浮
         self.root.attributes("-alpha", self.HOVER_ALPHA_SHOWN)
@@ -872,6 +875,7 @@ class ReaderApp:
         self._set_overrideredirect(False)
         self.root.attributes("-toolwindow", False)
         self.root.minsize(300, 180)
+        self._apply_compact_padding(999)
         try:
             self.root.attributes("-transparentcolor", "")
         except tk.TclError:
@@ -1520,10 +1524,28 @@ class ReaderApp:
         except tk.TclError:
             pass
 
+    def _apply_compact_padding(self, hh: int = None):
+        """窗口高度很小时收紧内边距，否则 20px 的 pady 会把仅有的行挤掉"""
+        try:
+            h = hh if hh is not None else self.root.winfo_height()
+            if h <= 60:
+                self.text.config(padx=6, pady=1)
+                self.text_frame.pack_configure(padx=1, pady=0)
+            elif h <= 120:
+                self.text.config(padx=10, pady=4)
+                self.text_frame.pack_configure(padx=2, pady=1)
+            else:
+                self.text.config(padx=16, pady=10)
+                self.text_frame.pack_configure(padx=4, pady=2)
+        except tk.TclError:
+            pass
+
     def _set_window_size(self, ww: int, hh: int):
         """设置窗口尺寸（阅读模式下的条状阅读）"""
         try:
             self.root.geometry(f"{ww}x{hh}")
+            self.root.update_idletasks()
+            self._apply_compact_padding(hh)
             self._sync_input_layer(True)
             self._schedule_save(400)
         except tk.TclError:
