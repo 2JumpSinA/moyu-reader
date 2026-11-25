@@ -265,7 +265,7 @@ class ReaderApp:
             title="会议记录",
             themename="litera",
             size=(860, 680),
-            minsize=(300, 180),
+            minsize=(180, 80),
         )
         self.root.place_window_center()
 
@@ -277,6 +277,7 @@ class ReaderApp:
         self.is_web_mode = True
         self._fetching = False
         self._toolbar_visible = True      # 顶栏是否可见
+        self._bottom_visible = True       # 翻页栏+状态栏是否可见
         self._opacity = 100
         self._drag_x = 0
         self._drag_y = 0
@@ -422,6 +423,7 @@ class ReaderApp:
         self.scrollbar.config(command=self.text.yview)
         self.text.config(state=tk.DISABLED)
         self._configure_tags()
+        self.root.bind("<Configure>", self._on_root_configure, add="+")
 
         # ═══ 底部翻页栏 ═══
         self.nav_bar = tk.Frame(self.root, bg=self._default_bg, padx=5, pady=2)
@@ -874,8 +876,8 @@ class ReaderApp:
 
         self._set_overrideredirect(False)
         self.root.attributes("-toolwindow", False)
-        self.root.minsize(300, 180)
-        self._apply_compact_padding(999)
+        self.root.minsize(180, 80)   # 普通模式也允许拖到很小
+        self._apply_compact_padding()
         try:
             self.root.attributes("-transparentcolor", "")
         except tk.TclError:
@@ -1523,6 +1525,28 @@ class ReaderApp:
             )
         except tk.TclError:
             pass
+
+    def _on_root_configure(self, event=None):
+        """窗口被拖拽缩放时自适应：小尺寸自动收起底部栏、收紧内边距"""
+        if event is not None and event.widget is not self.root:
+            return
+        try:
+            h = self.root.winfo_height()
+        except tk.TclError:
+            return
+        if self._reading_mode:
+            self._apply_compact_padding(h)
+            return
+        self._apply_compact_padding(h)
+        # 高度不足时收起翻页栏与状态栏，把空间让给正文
+        if h < 160 and self._bottom_visible:
+            self.nav_bar.pack_forget()
+            self.status_bar.pack_forget()
+            self._bottom_visible = False
+        elif h >= 160 and not self._bottom_visible:
+            self.nav_bar.pack(fill=X, after=self.text_frame)
+            self.status_bar.pack(fill=X, side=BOTTOM)
+            self._bottom_visible = True
 
     def _apply_compact_padding(self, hh: int = None):
         """窗口高度很小时收紧内边距，否则 20px 的 pady 会把仅有的行挤掉"""
