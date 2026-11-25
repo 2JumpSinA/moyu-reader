@@ -206,10 +206,29 @@ class ReaderApp:
     DEFAULT_FONT_FAMILY = "Microsoft YaHei"
     DEFAULT_FONT_SIZE = 10
     DEFAULT_LINE_SPACING = 2
+    # 候选字体（family, 别名集, 菜单标签）：中文优先，运行时只显示已安装的。
+    # 别名集兼容中文 Windows 的本地化字体名（families() 返回「微软雅黑」等中文名）
     FONT_CHOICES = [
-        "Microsoft YaHei", "SimSun", "KaiTi", "SimHei",
-        "FangSong", "Consolas", "Courier New", "Arial",
+        ("Microsoft YaHei", ("微软雅黑",), "微软雅黑 · 清晰耐看"),
+        ("DengXian", ("等线",), "等线 · 现代轻盈"),
+        ("SimHei", ("黑体",), "黑体 · 醒目粗犷"),
+        ("SimSun", ("宋体", "NSimSun", "新宋体"), "宋体 · 传统印刷"),
+        ("KaiTi", ("楷体", "KaiTi_GB2312", "楷体_GB2312"), "楷体 · 书卷气"),
+        ("FangSong", ("仿宋", "FangSong_GB2312", "仿宋_GB2312"), "仿宋 · 轻盈纤细"),
+        ("Microsoft JhengHei", ("微軟正黑體", "微软正黑"), "微软正黑 · 繁体"),
+        ("Yu Gothic", ("游ゴシック", "YuGothic"), "Yu Gothic · 日文小说"),
+        ("Malgun Gothic", ("맑은 고딕",), "Malgun · 韩文小说"),
+        ("Segoe UI", (), "Segoe UI"),
+        ("Calibri", (), "Calibri"),
+        ("Cambria", (), "Cambria · 衬线"),
+        ("Georgia", (), "Georgia · 衬线"),
+        ("Times New Roman", (), "Times New Roman"),
+        ("Bahnschrift", (), "Bahnschrift"),
+        ("Consolas", (), "Consolas · 等宽"),
+        ("Courier New", (), "Courier New · 等宽"),
+        ("Arial", (), "Arial"),
     ]
+    FONT_FALLBACK = ["Microsoft YaHei", "SimSun", "SimHei"]
 
     # 阅读模式文字颜色色板（分组：适用桌面明暗）
     READING_COLOR_GROUPS = [
@@ -308,6 +327,25 @@ class ReaderApp:
         # ── tkinter 变量 ──
         self.var_font_family = tk.StringVar(value=self.DEFAULT_FONT_FAMILY)
         self.var_font_size = tk.IntVar(value=self.DEFAULT_FONT_SIZE)
+        self.var_font_bold = tk.BooleanVar(value=False)   # 正文字体加粗
+
+        # 只把系统实际安装的字体放进菜单（主名或任一别名命中即算安装）
+        try:
+            from tkinter import font as tkfont
+            installed = set(tkfont.families(self.root))
+            self.font_menu_items = [
+                (fam, label)
+                for fam, aliases, label in self.FONT_CHOICES
+                if fam in installed or any(a in installed for a in aliases)
+            ]
+            # 一个都没有时兜底（极端环境）
+            if not self.font_menu_items:
+                self.font_menu_items = [(f, f) for f in self.FONT_FALLBACK]
+            fams = {f for f, _ in self.font_menu_items}
+            if self.var_font_family.get() not in fams:
+                self.var_font_family.set(self.font_menu_items[0][0])
+        except Exception:
+            self.font_menu_items = [(f, f) for f in self.FONT_FALLBACK]
         self.var_line_spacing = tk.IntVar(value=self.DEFAULT_LINE_SPACING)
         self.var_topmost = tk.BooleanVar(value=False)
         self.var_text_color = tk.StringVar(value="#777777")
@@ -421,13 +459,18 @@ class ReaderApp:
     def _build_context_menu(self):
         self.ctx_menu = tk.Menu(self.root, tearoff=0, font=("Microsoft YaHei", 10))
 
-        # ── 字体子菜单 ──
+        # ── 字体子菜单（仅列出已安装字体）──
         font_menu = tk.Menu(self.ctx_menu, tearoff=0, font=("Microsoft YaHei", 10))
-        for f in self.FONT_CHOICES:
+        for fam, label in self.font_menu_items:
             font_menu.add_radiobutton(
-                label=f, variable=self.var_font_family, value=f,
+                label=label, variable=self.var_font_family, value=fam,
                 command=self._apply_font,
             )
+        font_menu.add_separator()
+        font_menu.add_checkbutton(
+            label="加粗（大字号更耐读）", variable=self.var_font_bold,
+            command=self._apply_font,
+        )
         self.ctx_menu.add_cascade(label="字体", menu=font_menu)
 
         # ── 字号子菜单 ──
@@ -1455,7 +1498,8 @@ class ReaderApp:
         # 两种模式使用完全相同的字号/字重，避免切换时视觉跳变
         # spacing3 与 spacing2 保持一致：段落边界间距(spacing3+spacing1)与段内折行间距相同，
         # 否则段落交界处会比段内行距更紧，看起来行距不均匀
-        self.text.config(font=(family, size), spacing2=spacing, spacing3=spacing)
+        weight = "bold" if self.var_font_bold.get() else "normal"
+        self.text.config(font=(family, size, weight), spacing2=spacing, spacing3=spacing)
         self._configure_tags()
         self._reset_scroll_target()
         self._schedule_save(800)
@@ -1779,6 +1823,7 @@ class ReaderApp:
                 "text_color": self.var_text_color.get(),
                 "font_family": self.var_font_family.get(),
                 "font_size": int(self.var_font_size.get()),
+                "font_bold": bool(self.var_font_bold.get()),
                 "line_spacing": int(self.var_line_spacing.get()),
                 "opacity": int(self._opacity),
                 "topmost": bool(self.var_topmost.get()),
@@ -1874,6 +1919,8 @@ class ReaderApp:
                     self.var_font_family.set(app["font_family"])
                 if isinstance(app.get("font_size"), int):
                     self.var_font_size.set(app["font_size"])
+                if isinstance(app.get("font_bold"), bool):
+                    self.var_font_bold.set(app["font_bold"])
                 if isinstance(app.get("line_spacing"), int):
                     self.var_line_spacing.set(app["line_spacing"])
                 if isinstance(app.get("scroll_speed"), int):
