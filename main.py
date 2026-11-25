@@ -278,6 +278,7 @@ class ReaderApp:
         self._fetching = False
         self._toolbar_visible = True      # 顶栏是否可见
         self._bottom_visible = True       # 翻页栏+状态栏是否可见
+        self._height_locked = None        # 锁定的高度（None = 不锁）
         self._opacity = 100
         self._drag_x = 0
         self._drag_y = 0
@@ -550,18 +551,23 @@ class ReaderApp:
 
         # ── 窗口尺寸预设 ──
         size_preset = tk.Menu(self.ctx_menu, tearoff=0, font=("Microsoft YaHei", 10))
-        for label, (ww, hh) in (
-            ("隐形条 160×26", (160, 26)),
-            ("单行条 240×32", (240, 32)),
-            ("极简条 320×80", (320, 80)),
-            ("紧凑 420×140", (420, 140)),
-            ("标准 600×200", (600, 200)),
-            ("宽松 800×280", (800, 280)),
+        for label, (ww, hh), lock_h in (
+            ("隐形条 160×26（锁高·宽度自由）", (160, 26), True),
+            ("单行条 240×32（锁高·宽度自由）", (240, 32), True),
+            ("极简条 320×80（锁高·宽度自由）", (320, 80), True),
+            ("紧凑 420×140", (420, 140), False),
+            ("标准 600×200", (600, 200), False),
+            ("宽松 800×280", (800, 280), False),
         ):
             size_preset.add_command(
                 label=label,
-                command=lambda w=ww, h=hh: self._set_window_size(w, h),
+                command=lambda w=ww, h=hh, lk=lock_h: self._set_window_size(w, h, lk),
             )
+        size_preset.add_separator()
+        size_preset.add_command(
+            label="解除高度锁定（可自由缩放）",
+            command=lambda: self._unlock_height(),
+        )
         self.ctx_menu.add_cascade(label="窗口尺寸", menu=size_preset)
 
         # ── 滚轮速度 ──
@@ -1129,7 +1135,10 @@ class ReaderApp:
     def _layer_drag_motion(self, event):
         if self._resizing:
             new_w = max(self.MIN_READING_WIDTH, self._resize_w0 + (event.x_root - self._resize_x0))
-            new_h = max(self.MIN_READING_HEIGHT, self._resize_h0 + (event.y_root - self._resize_y0))
+            if self._height_locked:
+                new_h = self._height_locked      # 锁定高度：拖角只改宽度
+            else:
+                new_h = max(self.MIN_READING_HEIGHT, self._resize_h0 + (event.y_root - self._resize_y0))
             try:
                 self.root.geometry(f"{new_w}x{new_h}")
                 self._sync_input_layer(True)
@@ -1571,9 +1580,34 @@ class ReaderApp:
         except tk.TclError:
             pass
 
-    def _set_window_size(self, ww: int, hh: int):
-        """设置窗口尺寸（阅读模式下的条状阅读）"""
+    def _set_window_size(self, ww: int, hh: int, lock_height: bool = False):
+        """设置窗口尺寸。lock_height=True 时只锁定高度，宽度仍可自由拖拽"""
         try:
+            if lock_height:
+                # 宽度保持用户当前拖出来的值，只改高度
+                cur_w = max(self.root.winfo_width(), self.MIN_READING_WIDTH)
+                ww = cur_w
+                self._height_locked = hh
+                # resizable(width=True, height=False)：系统拖边框只能改宽，高度钉死
+                self.root.resizable(True, False)
+                # 阅读模式无边框，resizable 不生效，用 min/max 夹死高度
+                self.root.minsize(self.MIN_READING_WIDTH, hh)
+                try:
+                    self.root.maxsize(self.root.winfo_screenwidth(), hh)
+                except tk.TclError:
+                    pass
+            else:
+                self._height_locked = None
+                self.root.resizable(True, True)
+                self.root.minsize(
+                    self.MIN_READING_WIDTH if self._reading_mode else 180,
+                    self.MIN_READING_HEIGHT if self._reading_mode else 80,
+                )
+                try:
+                    self.root.maxsize(self.root.winfo_screenwidth(),
+                                      self.root.winfo_screenheight())
+                except tk.TclError:
+                    pass
             self.root.geometry(f"{ww}x{hh}")
             self.root.update_idletasks()
             self._apply_compact_padding(hh)
@@ -1581,6 +1615,22 @@ class ReaderApp:
             self._schedule_save(400)
         except tk.TclError:
             pass
+
+    def _unlock_height(self):
+        """解除高度锁定，恢复宽高都可自由缩放"""
+        self._height_locked = None
+        try:
+            self.root.resizable(True, True)
+            self.root.minsize(
+                self.MIN_READING_WIDTH if self._reading_mode else 180,
+                self.MIN_READING_HEIGHT if self._reading_mode else 80,
+            )
+            self.root.maxsize(self.root.winfo_screenwidth(),
+                              self.root.winfo_screenheight())
+        except tk.TclError:
+            pass
+        self.var_status.set("已解除高度锁定，可自由缩放")
+        self._schedule_save(400)
 
     def _reset_scroll_target(self):
         """布局/内容变化后清空待滚动量，避免用旧坐标步进"""
