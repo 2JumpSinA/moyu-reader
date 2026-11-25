@@ -570,6 +570,10 @@ class ReaderApp:
         )
         self.ctx_menu.add_cascade(label="窗口尺寸", menu=size_preset)
 
+        # ── 章节导航（小窗口下按钮可能被收起，用菜单兜底）──
+        self.ctx_menu.add_command(label="上一章", command=self._goto_prev_chapter)
+        self.ctx_menu.add_command(label="下一章", command=self._goto_next_chapter)
+
         # ── 滚轮速度 ──
         speed_menu = tk.Menu(self.ctx_menu, tearoff=0, font=("Microsoft YaHei", 10))
         for pct, label in (
@@ -717,8 +721,60 @@ class ReaderApp:
             self._scroll_pending = 0.0
             if pending > 0:
                 self._check_bottom()
+            else:
+                self._check_top()
             return
         self._smooth_job = self.root.after(16, self._smooth_scroll_tick)
+
+    def _check_top(self):
+        """滚动停稳在章顶且仍要向上 → 回到上一章（定位到章末，符合回看习惯）"""
+        if not self._reading_mode:
+            return
+        now = time.time()
+        if now - getattr(self, "_top_guard_ts", 0) < 1.2:
+            return
+        try:
+            if self.text.yview()[0] > 0.0005:
+                return
+        except tk.TclError:
+            return
+        self._top_guard_ts = now
+        self._goto_prev_chapter(bottom=True)
+
+    def _goto_prev_chapter(self, bottom: bool = False):
+        """上一章；bottom=True 时定位到章末（滚轮回看用）"""
+        if not self.is_web_mode and self.txt_book:
+            if not self.txt_book.has_prev():
+                self._show_toast("已经是第一章")
+                return
+            self.txt_book.go_prev()
+            self._show_txt_page()
+            if bottom:
+                # 布局未稳定时 moveto(1.0) 会被 _display 的 moveto(0) 覆盖，多次确认
+                for _d in (30, 120, 300):
+                    try:
+                        self.root.after(_d, lambda: self.text.yview_moveto(1.0))
+                    except tk.TclError:
+                        pass
+            self._schedule_save(400)
+        elif self.is_web_mode and self.history:
+            url = self.history.pop()
+            self.var_url.set(url)
+            self._on_fetch()
+
+    def _goto_next_chapter(self):
+        """下一章"""
+        if not self.is_web_mode and self.txt_book:
+            if not self.txt_book.has_next():
+                self._show_toast("已经是最后一章")
+                return
+            self.txt_book.go_next()
+            self._show_txt_page()
+            self._schedule_save(400)
+        elif self.is_web_mode and self.next_url:
+            self.history.append(self.current_url)
+            self.var_url.set(self.next_url)
+            self._on_fetch()
 
     def _check_bottom(self):
         """滚动停稳在章底且仍要向下 → 自动续章"""
@@ -1548,11 +1604,11 @@ class ReaderApp:
             return
         self._apply_compact_padding(h)
         # 高度不足时收起翻页栏与状态栏，把空间让给正文
-        if h < 160 and self._bottom_visible:
+        if h <= 60 and self._bottom_visible:
             self.nav_bar.pack_forget()
             self.status_bar.pack_forget()
             self._bottom_visible = False
-        elif h >= 160 and not self._bottom_visible:
+        elif h > 60 and not self._bottom_visible:
             self.nav_bar.pack(fill=X, after=self.text_frame)
             self.status_bar.pack(fill=X, side=BOTTOM)
             self._bottom_visible = True
