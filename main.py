@@ -368,7 +368,7 @@ class ReaderApp:
             font=(self.DEFAULT_FONT_FAMILY, self.DEFAULT_FONT_SIZE),
             spacing1=0,
             spacing2=self.DEFAULT_LINE_SPACING,
-            spacing3=0,
+            spacing3=self.DEFAULT_LINE_SPACING,
             padx=16,
             pady=10,
             relief=tk.FLAT,
@@ -1451,7 +1451,9 @@ class ReaderApp:
         size = self.var_font_size.get()
         spacing = self.var_line_spacing.get()
         # 两种模式使用完全相同的字号/字重，避免切换时视觉跳变
-        self.text.config(font=(family, size), spacing2=spacing)
+        # spacing3 与 spacing2 保持一致：段落边界间距(spacing3+spacing1)与段内折行间距相同，
+        # 否则段落交界处会比段内行距更紧，看起来行距不均匀
+        self.text.config(font=(family, size), spacing2=spacing, spacing3=spacing)
         self._configure_tags()
         self._reset_scroll_target()
         self._schedule_save(800)
