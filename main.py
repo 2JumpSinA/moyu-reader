@@ -520,7 +520,9 @@ class ReaderApp:
         # ── 滚轮速度 ──
         speed_menu = tk.Menu(self.ctx_menu, tearoff=0, font=("Microsoft YaHei", 10))
         for pct, label in (
-            (30, "很慢 30%"),
+            (10, "极慢 10%"),
+            (20, "很慢 20%"),
+            (30, "慢速 30%"),
             (50, "偏慢 50%"),
             (75, "稍慢 75%"),
             (100, "标准 100%"),
